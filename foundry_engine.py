@@ -51,10 +51,18 @@ def _ensure_agents():
 
     quality_id = _find_agent(client, SUB_QUALITY) or client.create_agent(
         model=FOUNDRY_MODEL, name=SUB_QUALITY,
-        instructions="製造異常の状況から品質影響の有無と該当ロット隔離の要否を簡潔に判定する専門家。").id
+        instructions=(
+            "あなたは製造現場の品質影響スペシャリスト。与えられた異常状況と参照資料から、"
+            "製品品質への影響とロット隔離の要否を判定する。\n"
+            "出力は4行以内で簡潔に: 1)品質影響: 有/無/要確認 2)理由 3)ロット隔離: 要/不要 "
+            "4)確認すべき品質指標。長文や前置きは禁止。")).id
     maint_id = _find_agent(client, SUB_MAINT) or client.create_agent(
         model=FOUNDRY_MODEL, name=SUB_MAINT,
-        instructions="製造設備の保全プランナー。想定原因に対する具体的な点検・処置と、保全エスカレーションの要否/宛先を助言する。").id
+        instructions=(
+            "あなたは製造設備の保全プランナー。想定原因に対する具体的な点検・処置と、"
+            "保全エスカレーションの要否/宛先を助言する。\n"
+            "出力は箇条書き5行以内: 最優先の点検/処置を順に、最後に『エスカレーション: 要(宛先)/不要』。"
+            "長文や一般論は禁止、現場が今すぐ動ける具体策のみ。")).id
 
     orch_id = _find_agent(client, ORCH_NAME)
     if not orch_id:
@@ -131,20 +139,25 @@ def orchestrate_foundry(intake, image_b64=None, use_feedback=True):
         {"agent": "Retrieval", "title": "資料を横断検索(ローカルRAG)",
          "detail": "  ".join(f"{core.LABEL[k]}:{len(v)}" for k, v in results.items()) + f"  / 現場確定 {fb_used}件"},
     ]
+    findings = []
     try:
         steps = list(client.run_steps.list(thread_id=run.thread_id, run_id=run.id))
         steps = sorted(steps, key=lambda s: getattr(s, "created_at", 0) or 0)
         for s in steps:
             stype = str(getattr(s, "type", ""))
             if "tool_call" in stype.lower():
-                for nm in _connected_names(s):
-                    trace.append({"agent": "Orchestrator", "title": "connected agent へ委譲",
-                                  "detail": f"Foundry: {SPECIALIST_LABEL.get(nm, nm)} を呼び出し"})
+                for f in _tool_findings(s):
+                    label = SPECIALIST_LABEL.get(f["name"], f["name"])
+                    findings.append({"name": f["name"], "label": label, "output": f["output"]})
+                    snippet = " ".join((f["output"] or "").split())[:60]
+                    trace.append({"agent": "Orchestrator", "title": f"{label} へ委譲",
+                                  "detail": f"Foundry connected agent: {snippet}…" if snippet else f"{label} を呼び出し"})
             elif "message" in stype.lower():
                 trace.append({"agent": "Triage", "title": "主エージェントが統合・判断",
-                              "detail": f"緊急度={triage.get('urgency',{}).get('level','-')} (Foundry connected agents)"})
+                              "detail": f"緊急度={triage.get('urgency',{}).get('level','-')} / 2体の専門エージェントの所見を統合"})
     except Exception:  # noqa
         trace.append({"agent": "Triage", "title": "主エージェントが判断", "detail": "Foundry connected agents"})
+    triage["specialist_findings"] = findings
 
     # 4. アクション(バックエンド実行) — escalation 判定に従う
     actions = []
@@ -182,9 +195,9 @@ def _as_dict(obj):
     return None
 
 
-def _connected_names(step):
-    """run step から connected agent 名を抽出 (step_details/tool_calls が dict でも model でも対応)。"""
-    names = []
+def _tool_findings(step):
+    """run step の connected agent tool call から {name, output, arguments} を抽出。"""
+    out = []
     try:
         details = getattr(step, "step_details", None)
         tcs = getattr(details, "tool_calls", None)
@@ -193,9 +206,11 @@ def _connected_names(step):
             tcs = (d.get("step_details") or {}).get("tool_calls") or []
         for tc in tcs:
             d = _as_dict(tc) or {}
-            n = (d.get("connected_agent") or {}).get("name") or d.get("name")
-            if n:
-                names.append(n)
+            ca = d.get("connected_agent") or {}
+            name = ca.get("name") or d.get("name")
+            if name:
+                out.append({"name": name, "output": ca.get("output") or "",
+                            "arguments": ca.get("arguments") or ""})
     except Exception:  # noqa
         pass
-    return names
+    return out

@@ -383,6 +383,7 @@ def orchestrate_local(client, intake, image_b64=None, use_feedback=True):
     triage["feedback_used"] = fb_used
     triage["use_feedback"] = use_feedback
     triage["engine"] = "local"
+    triage["specialist_findings"] = []
     return triage
 
 
