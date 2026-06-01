@@ -286,9 +286,18 @@ def run_triage(client, intake, results, image_b64=None):
         messages=[{"role": "system", "content": SYSTEM_PROMPT},
                   {"role": "user", "content": content}],
         response_format={"type": "json_object"},
-        temperature=0.2, max_tokens=1500,
+        temperature=0.2, max_tokens=2000,
     )
-    out = json.loads(resp.choices[0].message.content)
+    content_out = resp.choices[0].message.content or "{}"
+    try:
+        out = json.loads(content_out)
+    except json.JSONDecodeError:
+        import re as _re
+        m = _re.search(r"\{.*\}", content_out, _re.S)
+        out = json.loads(m.group(0)) if m else {
+            "urgency": {"level": "Medium", "reason": "出力の解析に失敗しました(要手動確認)"},
+            "root_causes": [], "first_checks": [], "similar_cases": [],
+            "recommended_actions": [], "escalation": {"should_notify": False}, "image_findings": None}
     # 根拠(citations)を付加
     out["citations"] = [
         {"source_type": kind, "label": LABEL[kind], "doc_id": d.get("doc_id", "-"),
