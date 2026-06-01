@@ -79,7 +79,7 @@ def triage(intake: Intake):
     if client is None:
         raise HTTPException(503, "Azure OpenAI が未設定です")
     corpus = core.load_corpus()
-    equip_map = {e["equipment_id"]: e["equipment_name"] for e in corpus["equipment_specs"]}
+    equip_map = {e["equipment_id"]: e["equipment_name"] for e in corpus.get("equipment_specs", [])}
     intake_d = intake.model_dump()
     intake_d["equipment_name"] = equip_map.get(intake.equipment_id, intake.equipment_id)
     try:
@@ -209,9 +209,12 @@ def knowledge():
 
 @app.post("/api/notify")
 def notify(req: NotifyReq):
-    sent, text = core.notify_teams(req.message,
-                                   {"equipment_name": req.equipment_name, "symptom": req.symptom},
-                                   req.urgency)
+    try:
+        sent, text = core.notify_teams(req.message,
+                                       {"equipment_name": req.equipment_name, "symptom": req.symptom},
+                                       req.urgency)
+    except Exception:  # noqa  webhook 障害などで全体を 500 トレースにしない
+        raise HTTPException(502, "通知の送信に失敗しました")
     return {"sent": sent, "text": text}
 
 

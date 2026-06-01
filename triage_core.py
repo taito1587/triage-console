@@ -5,7 +5,19 @@ import json
 import base64
 import math
 import hashlib
+import threading
 from pathlib import Path
+
+_FILE_LOCK = threading.Lock()  # ローカルJSON(feedback/embeddings)の read-modify-write を直列化
+
+
+def _atomic_write_json(path: Path, data) -> None:
+    """一時ファイルへ書いて rename する原子的書き込み(部分書き込み/破損を防ぐ)。"""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
 
 from openai import AzureOpenAI
 
@@ -74,8 +86,11 @@ def load_feedback():
         except Exception:  # noqa
             return []
     if FEEDBACK_PATH.exists():
-        with open(FEEDBACK_PATH, encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(FEEDBACK_PATH, encoding="utf-8") as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):  # 破損/競合時は空で継続
+            return []
     return []
 
 
@@ -85,11 +100,11 @@ def save_feedback(item):
     if c is not None:
         c.upsert_item(item)
         return item
-    fb = load_feedback()
-    fb.append(item)
-    FEEDBACK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with open(FEEDBACK_PATH, "w", encoding="utf-8") as f:
-        json.dump(fb, f, ensure_ascii=False, indent=2)
+    # ローカル: ロックで直列化し、同一IDは上書き(再解決などでの二重登録を防止)+原子的書き込み
+    with _FILE_LOCK:
+        fb = [x for x in load_feedback() if x.get("id") != item["id"]]
+        fb.append(item)
+        _atomic_write_json(FEEDBACK_PATH, fb)
     return item
 
 
@@ -132,8 +147,8 @@ def _load_embed_cache():
 
 def _save_embed_cache():
     try:
-        with open(EMBED_CACHE_PATH, "w", encoding="utf-8") as f:
-            json.dump(_embed_cache, f)
+        with _FILE_LOCK:
+            _atomic_write_json(EMBED_CACHE_PATH, _embed_cache)
     except Exception:  # noqa
         pass
 

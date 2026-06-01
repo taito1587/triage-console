@@ -41,7 +41,12 @@ fi
 # 4. zip化 (node_modules/.venv/.git 除外) してデプロイ
 echo "==> zip & deploy"
 rm -f /tmp/mfg-deploy.zip
-zip -rq /tmp/mfg-deploy.zip server.py triage_core.py app.py requirements.txt data/corpus.json frontend/dist
+zip -rq /tmp/mfg-deploy.zip \
+  server.py triage_core.py incident.py routes_incident.py \
+  evaluation.py routes_eval.py foundry_engine.py app.py \
+  requirements.txt \
+  data/corpus.json data/sample_events.json data/eval_set.json \
+  frontend/dist
 az webapp deploy -g "$RG" -n "$APP" --src-path /tmp/mfg-deploy.zip --type zip
 az webapp restart -g "$RG" -n "$APP" -o none
 
