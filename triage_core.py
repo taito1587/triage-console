@@ -3,6 +3,8 @@ Streamlit版(app.py)とFastAPI版(server.py)で共有する。"""
 import os
 import json
 import base64
+import math
+import hashlib
 from pathlib import Path
 
 from openai import AzureOpenAI
@@ -55,17 +57,100 @@ def get_client():
     )
 
 
-def retrieve(corpus, feedback, equipment_id, error_code, free_text, symptom, top_k=5):
-    """超軽量ハイブリッド: 設備ID/エラーコード一致 + キーワード重なりでスコアリング。"""
-    query = f"{equipment_id} {error_code} {symptom} {free_text}".lower()
-    q_terms = set(t for t in query.replace("　", " ").split() if t)
+EMBED_DEPLOYMENT = os.getenv("AZURE_OPENAI_EMBED_DEPLOYMENT", "text-embedding-3-small")
+EMBED_CACHE_PATH = ROOT / "data" / "embeddings_cache.json"
+_embed_cache = None
+
+
+def _load_embed_cache():
+    global _embed_cache
+    if _embed_cache is None:
+        try:
+            with open(EMBED_CACHE_PATH, encoding="utf-8") as f:
+                _embed_cache = json.load(f)
+        except Exception:  # noqa
+            _embed_cache = {}
+    return _embed_cache
+
+
+def _save_embed_cache():
+    try:
+        with open(EMBED_CACHE_PATH, "w", encoding="utf-8") as f:
+            json.dump(_embed_cache, f)
+    except Exception:  # noqa
+        pass
+
+
+def _h(text):
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def embed_texts(texts):
+    """埋め込みをキャッシュ付きで返す(未キャッシュ分のみバッチでAPI呼び出し)。"""
+    cache = _load_embed_cache()
+    missing = list({t for t in texts if _h(t) not in cache})
+    if missing:
+        client = get_client()
+        if client is None:
+            raise RuntimeError("AOAI未設定")
+        for i in range(0, len(missing), 96):
+            chunk = missing[i:i + 96]
+            resp = client.embeddings.create(model=EMBED_DEPLOYMENT, input=chunk)
+            for t, d in zip(chunk, resp.data):
+                cache[_h(t)] = d.embedding
+        _save_embed_cache()
+    return [cache[_h(t)] for t in texts]
+
+
+def _cos(a, b):
+    s = na = nb = 0.0
+    for x, y in zip(a, b):
+        s += x * y; na += x * x; nb += y * y
+    return s / (math.sqrt(na) * math.sqrt(nb) + 1e-9)
+
+
+def _pools(corpus, feedback):
     fb_troubles = [{**fb, "source": "feedback", "text": fb.get("text", "")} for fb in feedback]
-    pools = {
+    return {
         "past_trouble": corpus["past_troubles"] + fb_troubles,
         "procedure": corpus["procedures"],
         "equipment_spec": corpus["equipment_specs"],
         "quality_record": corpus["quality_records"],
     }
+
+
+def retrieve(corpus, feedback, equipment_id, error_code, free_text, symptom, top_k=5):
+    """意味検索(埋め込み) + 設備ID/コード/現場確定のブースト。失敗時は keyword にフォールバック。"""
+    pools = _pools(corpus, feedback)
+    query = f"設備:{equipment_id} エラーコード:{error_code} 症状:{symptom} {free_text}".strip()
+    try:
+        all_docs = [d for docs in pools.values() for d in docs]
+        texts = [(d.get("text") or " ") for d in all_docs]
+        qvec = embed_texts([query])[0]
+        dvecs = embed_texts(texts)
+        vec_by_id = {id(d): v for d, v in zip(all_docs, dvecs)}
+
+        def score(doc):
+            s = _cos(qvec, vec_by_id[id(doc)])
+            if equipment_id and doc.get("equipment_id") == equipment_id:
+                s += 0.15
+            if error_code and error_code.lower() in (doc.get("text", "").lower()):
+                s += 0.10
+            if doc.get("source") == "feedback":
+                s += 0.05
+            return s
+
+        results = {}
+        for kind, docs in pools.items():
+            results[kind] = sorted(docs, key=score, reverse=True)[:top_k]
+        return results
+    except Exception:  # noqa
+        return _retrieve_keyword(pools, equipment_id, error_code, free_text, symptom, top_k)
+
+
+def _retrieve_keyword(pools, equipment_id, error_code, free_text, symptom, top_k=5):
+    query = f"{equipment_id} {error_code} {symptom} {free_text}".lower()
+    q_terms = set(t for t in query.replace("　", " ").split() if t)
 
     def score(doc):
         s = 0
