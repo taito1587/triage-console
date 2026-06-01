@@ -6,3 +6,4 @@ uvicorn[standard]>=0.29,<1
 azure-ai-projects>=2.2,<3
 azure-ai-agents>=1.1,<2
 azure-identity>=1.17,<2
+azure-cosmos>=4.7,<5

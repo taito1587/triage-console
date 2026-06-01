@@ -33,7 +33,46 @@ def load_corpus():
         return json.load(f)
 
 
+# --- フィードバック永続化: COSMOS_* があれば Cosmos DB、無ければローカルJSON -----
+COSMOS_ENDPOINT = os.getenv("COSMOS_ENDPOINT", "")
+COSMOS_KEY = os.getenv("COSMOS_KEY", "")
+COSMOS_DB = os.getenv("COSMOS_DB", "mta")
+COSMOS_CONTAINER = os.getenv("COSMOS_CONTAINER", "feedback")
+_cosmos_container = None
+
+
+def _cosmos():
+    """Cosmos コンテナを返す(未設定なら None)。"""
+    global _cosmos_container
+    if not (COSMOS_ENDPOINT and COSMOS_KEY):
+        return None
+    if _cosmos_container is None:
+        from azure.cosmos import CosmosClient, PartitionKey
+        client = CosmosClient(COSMOS_ENDPOINT, credential=COSMOS_KEY)
+        try:
+            db = client.create_database_if_not_exists(COSMOS_DB)
+        except Exception:  # noqa
+            db = client.get_database_client(COSMOS_DB)
+        try:
+            _cosmos_container = db.create_container_if_not_exists(
+                id=COSMOS_CONTAINER, partition_key=PartitionKey(path="/equipment_id"))
+        except Exception:  # noqa
+            _cosmos_container = db.get_container_client(COSMOS_CONTAINER)
+    return _cosmos_container
+
+
+def storage_mode():
+    return "cosmos" if (COSMOS_ENDPOINT and COSMOS_KEY) else "local"
+
+
 def load_feedback():
+    c = _cosmos()
+    if c is not None:
+        try:
+            items = list(c.read_all_items())
+            return sorted(items, key=lambda x: x.get("date", ""))
+        except Exception:  # noqa
+            return []
     if FEEDBACK_PATH.exists():
         with open(FEEDBACK_PATH, encoding="utf-8") as f:
             return json.load(f)
@@ -41,6 +80,11 @@ def load_feedback():
 
 
 def save_feedback(item):
+    item = {**item, "id": item.get("doc_id") or item.get("id") or _h(json.dumps(item, ensure_ascii=False))}
+    c = _cosmos()
+    if c is not None:
+        c.upsert_item(item)
+        return item
     fb = load_feedback()
     fb.append(item)
     FEEDBACK_PATH.parent.mkdir(parents=True, exist_ok=True)
