@@ -1,0 +1,14 @@
+[
+  {"id": "ev-c1", "equipment_id": "L2-CONV-01", "error_code": "E-142", "symptom": "異音", "free_text": "品種切替の直後から搬送部でガラガラ音がする。", "expected_causes": ["ローラー", "摩耗"]},
+  {"id": "ev-c2", "equipment_id": "L2-CONV-01", "error_code": "E-142", "symptom": "温度異常", "free_text": "搬送部の異音とともに軸受あたりが熱い。", "expected_causes": ["軸受", "グリス"]},
+  {"id": "ev-c3", "equipment_id": "L2-CONV-01", "error_code": "E-142", "symptom": "異音", "free_text": "冬の朝一番、立ち上げ直後だけ搬送が重く異音。", "expected_causes": ["低温", "グリス", "硬化"]},
+  {"id": "ev-f1", "equipment_id": "L2-FILL-01", "error_code": "F-201", "symptom": "品質不良", "free_text": "充填量が狙いから外れてばらつく。偏差警報。", "expected_causes": ["ロードセル", "校正", "液圧", "バルブ"]},
+  {"id": "ev-f2", "equipment_id": "L2-FILL-01", "error_code": "F-230", "symptom": "停止", "free_text": "ノズルが詰まってヘッドが止まった。甘い飲料。", "expected_causes": ["ノズル", "結晶", "詰ま"]},
+  {"id": "ev-cap1", "equipment_id": "L2-CAP-01", "error_code": "C-301", "symptom": "品質不良", "free_text": "打栓トルクがばらついて規定から外れる。", "expected_causes": ["摩耗", "チャック", "ヘッド", "トルククラッチ"]},
+  {"id": "ev-l1", "equipment_id": "L2-LBL-01", "error_code": "L-401", "symptom": "品質不良", "free_text": "ラベルの貼り位置が斜めにずれる個体が増えた。", "expected_causes": ["センサー", "位置決め", "搬送"]},
+  {"id": "ev-l2", "equipment_id": "L2-LBL-01", "error_code": "L-420", "symptom": "品質不良", "free_text": "ラベルが剥がれてくる。接着が弱い。", "expected_causes": ["グルー", "温度", "接着", "糊"]},
+  {"id": "ev-i1", "equipment_id": "L2-INSP-01", "error_code": "I-501", "symptom": "その他", "free_text": "検査の外観不良の検出が急に増えた。", "expected_causes": ["上流", "ラベラー", "充填", "波及"]},
+  {"id": "ev-i2", "equipment_id": "L2-INSP-01", "error_code": "I-520", "symptom": "停止", "free_text": "不良品をリジェクターが弾けていない。", "expected_causes": ["エアブロー", "リジェクター", "圧"]},
+  {"id": "ev-p1", "equipment_id": "L2-PACK-01", "error_code": "P-601", "symptom": "停止", "free_text": "ケーサーで段ボールが詰まって停止。湿気が多い日。", "expected_causes": ["段ボール", "反り", "湿気"]},
+  {"id": "ev-cap2", "equipment_id": "L2-CAP-01", "error_code": "C-310", "symptom": "停止", "free_text": "キャップが供給されず止まる。", "expected_causes": ["ソーター", "供給", "シュート", "詰ま"]}
+]
