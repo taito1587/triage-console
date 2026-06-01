@@ -256,7 +256,7 @@ export default function App() {
   const runTriage = async () => {
     setLoading(true); setResult(null); setError(null)
     const ctrl = new AbortController()
-    const timer = setTimeout(() => ctrl.abort(), 45000) // 45秒でタイムアウト
+    const timer = setTimeout(() => ctrl.abort(), 150000) // 真のハング検知用の余裕ある上限(通常診断は30秒台。foundryのコールドスタート/画像付きでも誤発火しない)
     try {
       const image_b64 = imgFile ? await fileToB64(imgFile) : null
       const res = await fetch('/api/triage', {
@@ -1406,23 +1406,22 @@ function IncidentTable({ incidents, onChange }: { incidents: Incident[]; onChang
     return (
       <Table.Tr key={inc.id}>
         <Table.Td>
-          <Badge size="sm" radius="sm" variant="light" color={u.color}
+          <Badge size="sm" radius="sm" variant="light" color={u.color} style={{ whiteSpace: 'nowrap' }}
+            styles={{ label: { overflow: 'visible' } }}
             leftSection={<Box c={`${u.color}.7`} style={{ display: 'flex' }}><IconPointFilled size={8} /></Box>}>{u.label}</Badge>
         </Table.Td>
         <Table.Td><Text size="sm" fw={600} c="gray.9" style={{ whiteSpace: 'nowrap' }}>{inc.equipment_name}</Text></Table.Td>
         <Table.Td>
-          <Group gap={4} wrap="nowrap">
-            <Badge size="xs" variant="default" radius="sm" c="gray.6" tt="none">{inc.symptom}</Badge>
-            {inc.error_code && <Badge size="xs" variant="default" radius="sm" c="gray.6" tt="none">{inc.error_code}</Badge>}
-          </Group>
+          <Text size="sm" c="gray.8" style={{ whiteSpace: 'nowrap' }}>{inc.symptom}</Text>
+          {inc.error_code && <Text size="xs" c="dimmed" ff="monospace" style={{ whiteSpace: 'nowrap' }}>{inc.error_code}</Text>}
         </Table.Td>
-        <Table.Td miw={200}><Text size="sm" c="gray.7" lineClamp={2}>{inc.top_cause || '—'}</Text></Table.Td>
+        <Table.Td miw={220} style={{ maxWidth: 320 }}><Text size="sm" c="gray.7" lineClamp={2}>{inc.top_cause || '—'}</Text></Table.Td>
         <Table.Td><Text size="sm" fw={600} c="gray.8" className="tnum">{inc.confidence > 0 ? `${Math.round(inc.confidence * 100)}%` : '—'}</Text></Table.Td>
         <Table.Td>
           <Text size="xs" c="gray.7">{inc.source}</Text>
           <Text size="xs" c="dimmed" className="tnum" style={{ whiteSpace: 'nowrap' }}>{ts}</Text>
         </Table.Td>
-        <Table.Td><Badge color={st.color} variant="light" radius="sm" size="sm">{st.label}</Badge></Table.Td>
+        <Table.Td><Badge color={st.color} variant="light" radius="sm" size="sm" style={{ whiteSpace: 'nowrap' }} styles={{ label: { overflow: 'visible' } }}>{st.label}</Badge></Table.Td>
         <Table.Td>
           {inc.status === 'resolved' ? (
             <Tooltip label={inc.resolution ? `${inc.resolution.root_cause} ・ 復旧${inc.resolution.recovery_minutes}分` : '解決済み'} withArrow>
@@ -1442,13 +1441,14 @@ function IncidentTable({ incidents, onChange }: { incidents: Incident[]; onChang
   })
   return (
     <Card p={0} withBorder>
-      <Table.ScrollContainer minWidth={960}>
-        <Table striped highlightOnHover verticalSpacing="sm" horizontalSpacing="md" stickyHeader>
+      <Table.ScrollContainer minWidth={1060}>
+        <Table striped highlightOnHover verticalSpacing="sm" horizontalSpacing="md" stickyHeader
+          styles={{ th: { whiteSpace: 'nowrap' } }}>
           <Table.Thead>
             <Table.Tr>
               <Table.Th>緊急度</Table.Th>
               <Table.Th>設備</Table.Th>
-              <Table.Th>症状 / コード</Table.Th>
+              <Table.Th>症状・コード</Table.Th>
               <Table.Th>推定原因</Table.Th>
               <Table.Th>確信度</Table.Th>
               <Table.Th>検知</Table.Th>
