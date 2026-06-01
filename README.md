@@ -17,7 +17,9 @@
 ## 使用技術（Microsoft / Azure）
 
 - **Azure OpenAI (GPT-4o)** — トリアージ推論 + 画像解析(vision)
-- **Azure App Service** — Streamlit アプリのホスティング
+- **Azure App Service** — FastAPI が API とフロントを配信
+- **フロント**: React + TypeScript + **Mantine UI** + Tabler Icons
+- **バック**: FastAPI（`/api/triage` `/api/feedback` `/api/knowledge` `/api/notify`）
 - RAG: 小規模コーパスをプロンプトに同梱（手順書/過去トラブル/設備仕様/品質記録）
 - (加点) Teams Incoming Webhook によるエスカレーション実行
 
@@ -35,18 +37,29 @@
 ## ローカル実行
 
 ```bash
+# バックエンド
 python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env   # AOAI の値を記入
-streamlit run app.py
+cp .env.example .env            # AOAI の値を記入
+python -m uvicorn server:app --port 8000
+
+# フロント (別ターミナル / 開発時)
+cd frontend && npm install && npm run dev   # /api は :8000 にプロキシ
 ```
+
+本番同等で動かす場合は `cd frontend && npm run build` 後に uvicorn を起動すると、
+FastAPI が `frontend/dist` を配信する（http://localhost:8000）。
+
+> Streamlit 版 (`app.py`) も残置（`streamlit run app.py`）。
 
 ## Azure へデプロイ
 
 ```bash
 az login
-cp .env.example .env   # AOAI の値を記入
-bash deploy.sh         # App Service を作成しデプロイ → URL が出力される
+cp .env.example .env
+cd frontend && npm run build && cd ..
+zip -rq /tmp/deploy.zip server.py triage_core.py requirements.txt data/corpus.json frontend/dist
+az webapp deploy -g rg-mfg-triage -n <app> --src-path /tmp/deploy.zip --type zip
 ```
 
 ## アーキテクチャ / 設計ドキュメント
