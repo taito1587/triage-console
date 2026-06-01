@@ -238,6 +238,25 @@ def decide_and_act(client, intake, triage):
 # Orchestrator — 4エージェントを順に動かし、実行トレースを記録して返す
 # ===========================================================================
 def orchestrate(client, intake, image_b64=None, use_feedback=True):
+    """エンジン切替: TRIAGE_ENGINE=foundry なら Foundry connected agents、
+    失敗時/未設定時は自作オーケストレーション(local)に自動フォールバック。"""
+    engine = os.getenv("TRIAGE_ENGINE", "local").lower()
+    if engine == "foundry":
+        try:
+            import foundry_engine
+            if foundry_engine.available():
+                return foundry_engine.orchestrate_foundry(intake, image_b64, use_feedback)
+        except Exception as e:  # noqa
+            local = orchestrate_local(client, intake, image_b64, use_feedback)
+            local.setdefault("trace", []).insert(0, {
+                "agent": "System", "title": "Foundryフォールバック",
+                "detail": f"Foundry実行に失敗しlocalエンジンで継続: {str(e)[:120]}"})
+            local["engine"] = "local (foundry fallback)"
+            return local
+    return orchestrate_local(client, intake, image_b64, use_feedback)
+
+
+def orchestrate_local(client, intake, image_b64=None, use_feedback=True):
     corpus = load_corpus()
     all_feedback = load_feedback()
     feedback = all_feedback if use_feedback else []
@@ -278,6 +297,7 @@ def orchestrate(client, intake, image_b64=None, use_feedback=True):
     triage["actions"] = actions
     triage["feedback_used"] = fb_used
     triage["use_feedback"] = use_feedback
+    triage["engine"] = "local"
     return triage
 
 
