@@ -101,6 +101,19 @@ def get_client():
     )
 
 
+TRANSCRIBE_DEPLOYMENT = os.getenv("AZURE_OPENAI_TRANSCRIBE_DEPLOYMENT", "whisper")
+
+
+def transcribe(audio_bytes, filename="audio.webm"):
+    """音声バイト列を Azure OpenAI (whisper) で文字起こしする。"""
+    client = get_client()
+    if client is None:
+        raise RuntimeError("AOAI未設定")
+    resp = client.audio.transcriptions.create(
+        model=TRANSCRIBE_DEPLOYMENT, file=(filename, audio_bytes), language="ja")
+    return resp.text
+
+
 EMBED_DEPLOYMENT = os.getenv("AZURE_OPENAI_EMBED_DEPLOYMENT", "text-embedding-3-small")
 EMBED_CACHE_PATH = ROOT / "data" / "embeddings_cache.json"
 _embed_cache = None

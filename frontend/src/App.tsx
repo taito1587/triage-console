@@ -1,9 +1,9 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import {
   AppShell, Group, Stack, Box, Title, Text, Card, Badge, Button,
   Select, TextInput, Textarea, Progress, ThemeIcon, UnstyledButton,
   Accordion, SimpleGrid, NumberInput, Paper, Loader, Center, Grid,
-  ScrollArea, Image, Switch, ActionIcon, Tooltip, Burger, Divider, Skeleton,
+  ScrollArea, Image, Switch, Tooltip, Burger, Divider, Skeleton,
 } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
 import { Dropzone, IMAGE_MIME_TYPE } from '@mantine/dropzone'
@@ -15,7 +15,7 @@ import {
   IconRobot, IconRoute, IconMicrophone, IconMessageChatbot, IconClock,
   IconAlertCircle, IconX, IconForms, IconDatabaseSearch, IconStethoscope,
   IconActivityHeartbeat, IconBulb, IconChartHistogram, IconSitemap,
-  IconPointFilled, IconClipboardPlus,
+  IconPointFilled, IconClipboardPlus, IconPlayerStopFilled,
 } from '@tabler/icons-react'
 
 // ---- types ----------------------------------------------------------------
@@ -53,13 +53,46 @@ async function fileToB64(file: File): Promise<string> {
   })
 }
 
-// 音声入力 (Web Speech API)
-function dictate(onText: (t: string) => void) {
-  const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition
-  if (!SR) { notifications.show({ color: 'yellow', message: 'このブラウザは音声入力に未対応です' }); return }
-  const rec = new SR(); rec.lang = 'ja-JP'; rec.interimResults = false
-  rec.onresult = (e: any) => onText(e.results[0][0].transcript)
-  rec.start()
+// 音声入力ボタン — ブラウザ録音(MediaRecorder) → Azure OpenAI(whisper) で文字起こし
+function MicButton({ onText, label = '音声入力' }: { onText: (t: string) => void; label?: string }) {
+  const [recording, setRecording] = useState(false)
+  const [busy, setBusy] = useState(false)
+  const mrRef = useRef<MediaRecorder | null>(null)
+  const chunksRef = useRef<Blob[]>([])
+  const toggle = async () => {
+    if (recording) { mrRef.current?.stop(); return }
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mr = new MediaRecorder(stream)
+      chunksRef.current = []
+      mr.ondataavailable = (e) => { if (e.data.size) chunksRef.current.push(e.data) }
+      mr.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop())
+        setRecording(false); setBusy(true)
+        try {
+          const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
+          const fd = new FormData(); fd.append('file', blob, 'audio.webm')
+          const res = await fetch('/api/transcribe', { method: 'POST', body: fd })
+          const d = await res.json()
+          if (res.ok && d.text) onText(d.text)
+          else notifications.show({ color: 'red', title: '音声入力', message: d.detail || '文字起こしに失敗しました' })
+        } catch (err) {
+          notifications.show({ color: 'red', title: '音声入力', message: String(err) })
+        } finally { setBusy(false) }
+      }
+      mr.start(); mrRef.current = mr; setRecording(true)
+    } catch {
+      notifications.show({ color: 'red', title: '音声入力', message: 'マイクにアクセスできません（ブラウザの許可を確認してください）' })
+    }
+  }
+  return (
+    <Button size="compact-sm" radius="xl" onClick={toggle} loading={busy}
+      variant={recording ? 'filled' : 'light'} color={recording ? 'red' : 'brand'}
+      leftSection={recording ? <IconPlayerStopFilled size={13} /> : <IconMicrophone size={13} />}
+      className={recording ? 'mic-pulse' : undefined}>
+      {busy ? '変換中…' : recording ? '停止（録音中）' : label}
+    </Button>
+  )
 }
 
 // ---- 共通: カード見出し（アイコンはモノクロで統一） ----------------------
@@ -263,7 +296,7 @@ function InputForm(p: InputProps) {
           label={
             <Group gap={4} justify="space-between" w="100%">
               <span>自由記述</span>
-              <Tooltip label="音声入力"><ActionIcon variant="subtle" color="gray" size="sm" onClick={() => dictate(p.setFree)}><IconMicrophone size={15} /></ActionIcon></Tooltip>
+              <MicButton onText={(t) => p.setFree(p.free ? `${p.free} ${t}` : t)} />
             </Group>
           }
           autosize minRows={3} value={p.free} onChange={(e) => p.setFree(e.currentTarget.value)} placeholder="例: 搬送部から異音。直前に段取り替え。" />
@@ -629,7 +662,7 @@ function FollowupPanel({ intake }: { intake: FIntake }) {
         ))}
         <Group gap="xs">
           <TextInput style={{ flex: 1 }} placeholder="例: ローラー交換の手順は？" value={q} onChange={(e) => setQ(e.currentTarget.value)} onKeyDown={(e) => e.key === 'Enter' && ask()} />
-          <Tooltip label="音声入力"><ActionIcon variant="default" size="lg" onClick={() => dictate(setQ)}><IconMicrophone size={17} /></ActionIcon></Tooltip>
+          <MicButton onText={(t) => setQ(q ? `${q} ${t}` : t)} label="音声" />
           <Button onClick={ask} loading={loading} leftSection={<IconSend size={15} />}>質問</Button>
         </Group>
       </Stack>

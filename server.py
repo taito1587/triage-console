@@ -3,7 +3,7 @@
 from pathlib import Path
 from collections import Counter
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -112,6 +112,19 @@ def feedback(fb: Feedback):
     }
     core.save_feedback(item)
     return {"ok": True, "item": item}
+
+
+@app.post("/api/transcribe")
+async def transcribe(file: UploadFile = File(...)):
+    client = core.get_client()
+    if client is None:
+        raise HTTPException(503, "Azure OpenAI が未設定です")
+    data = await file.read()
+    try:
+        text = core.transcribe(data, file.filename or "audio.webm")
+    except Exception as e:  # noqa
+        raise HTTPException(500, f"文字起こし失敗: {e}")
+    return {"text": text}
 
 
 @app.get("/api/knowledge")
