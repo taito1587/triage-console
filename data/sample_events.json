@@ -1,0 +1,10 @@
+[
+  {"id": "evt-0901", "equipment_id": "L2-CONV-01", "error_code": "E-142", "symptom": "異音", "free_text": "搬送部から異音。温度上昇あり。直前に段取り替え。", "source": "アラーム", "ts": "2026-06-01T08:12:00"},
+  {"id": "evt-0902", "equipment_id": "L2-FILL-01", "error_code": "F-201", "symptom": "品質不良", "free_text": "充填量が規定からばらつき、偏差過大の警報。", "source": "アラーム", "ts": "2026-06-01T08:31:00"},
+  {"id": "evt-0903", "equipment_id": "L2-LBL-01", "error_code": "L-401", "symptom": "品質不良", "free_text": "ラベルが斜めにずれて貼られる個体が増えてきた。", "source": "オペレータ", "ts": "2026-06-01T08:45:00"},
+  {"id": "evt-0904", "equipment_id": "L2-PACK-01", "error_code": "P-601", "symptom": "停止", "free_text": "ケーサーで段ボール供給が詰まりライン停止。", "source": "アラーム", "ts": "2026-06-01T09:02:00"},
+  {"id": "evt-0905", "equipment_id": "L2-INSP-01", "error_code": "I-501", "symptom": "その他", "free_text": "検査機の外観不良の検出率が急に上がっている。", "source": "アラーム", "ts": "2026-06-01T09:20:00"},
+  {"id": "evt-0906", "equipment_id": "L2-CAP-01", "error_code": "C-301", "symptom": "振動", "free_text": "キャッパーの打栓部から軽い振動。トルクは規定内。", "source": "センサー", "ts": "2026-06-01T09:38:00"},
+  {"id": "evt-0907", "equipment_id": "L2-CONV-01", "error_code": "E-125", "symptom": "その他", "free_text": "チェーン張力低下の表示。搬送は継続中。", "source": "アラーム", "ts": "2026-06-01T09:55:00"},
+  {"id": "evt-0908", "equipment_id": "L2-FILL-01", "error_code": "F-230", "symptom": "停止", "free_text": "充填ノズル詰まりでヘッド停止。糖分結晶化の疑い。", "source": "アラーム", "ts": "2026-06-01T10:10:00"}
+]
