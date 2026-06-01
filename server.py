@@ -22,6 +22,17 @@ class Intake(BaseModel):
     symptom: str = "その他"
     free_text: str = ""
     image_b64: str | None = None
+    use_feedback: bool = True
+
+
+class FollowupReq(BaseModel):
+    equipment_id: str
+    equipment_name: str = ""
+    error_code: str = ""
+    symptom: str = ""
+    free_text: str = ""
+    question: str
+    use_feedback: bool = True
 
 
 class Feedback(BaseModel):
@@ -66,14 +77,24 @@ def triage(intake: Intake):
     equip_map = {e["equipment_id"]: e["equipment_name"] for e in corpus["equipment_specs"]}
     intake_d = intake.model_dump()
     intake_d["equipment_name"] = equip_map.get(intake.equipment_id, intake.equipment_id)
-    feedback = core.load_feedback()
-    results = core.retrieve(corpus, feedback, intake.equipment_id, intake.error_code,
-                            intake.free_text, intake.symptom)
     try:
-        out = core.run_triage(client, intake_d, results, intake.image_b64)
+        out = core.orchestrate(client, intake_d, intake.image_b64, intake.use_feedback)
     except Exception as e:  # noqa
         raise HTTPException(500, f"トリアージ失敗: {e}")
     return out
+
+
+@app.post("/api/followup")
+def followup(req: FollowupReq):
+    client = core.get_client()
+    if client is None:
+        raise HTTPException(503, "Azure OpenAI が未設定です")
+    intake_d = req.model_dump()
+    try:
+        ans = core.followup(client, intake_d, req.question, req.use_feedback)
+    except Exception as e:  # noqa
+        raise HTTPException(500, f"回答失敗: {e}")
+    return {"answer": ans}
 
 
 @app.post("/api/feedback")

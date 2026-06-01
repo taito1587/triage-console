@@ -170,3 +170,128 @@ def notify_teams(message, intake, urgency):
         return True, text
     except Exception as e:  # noqa
         return False, f"{text}\n(送信失敗: {e})"
+
+
+# ===========================================================================
+# Action Agent — function calling でAIが自律的にツールを選んで実行する
+# ===========================================================================
+ACTION_TOOLS = [
+    {"type": "function", "function": {
+        "name": "escalate_to_maintenance",
+        "description": "緊急度Highや品質影響・安全リスクがある場合に、保全チーム(Teams)へ通知してエスカレーションする。Lowでは呼ばない。",
+        "parameters": {"type": "object", "properties": {
+            "to": {"type": "string", "description": "通知先(例: 保全当番)"},
+            "message": {"type": "string", "description": "通知本文(設備/症状/想定原因/初動を1-2行)"},
+        }, "required": ["to", "message"]},
+    }},
+    {"type": "function", "function": {
+        "name": "isolate_lot",
+        "description": "品質影響の可能性がある場合に、該当時間帯の生産ロットを隔離フラグする。",
+        "parameters": {"type": "object", "properties": {
+            "reason": {"type": "string", "description": "隔離する理由"},
+        }, "required": ["reason"]},
+    }},
+]
+
+
+def _exec_tool(name, args, intake, urgency):
+    """ツールの実体。Action AgentのツールコールをサーバÅで実行する。"""
+    if name == "escalate_to_maintenance":
+        sent, text = notify_teams(args.get("message", ""), intake, urgency)
+        return {"tool": name, "args": args, "result": ("Teams送信" if sent else "(デモ)通知シミュレート"),
+                "detail": text, "executed": True}
+    if name == "isolate_lot":
+        import datetime
+        ticket = f"ISO-{intake.get('equipment_id','LOT')}"
+        return {"tool": name, "args": args, "result": f"ロット隔離フラグ発行 {ticket}",
+                "detail": args.get("reason", ""), "executed": True}
+    return {"tool": name, "args": args, "result": "unknown tool", "executed": False}
+
+
+def decide_and_act(client, intake, triage):
+    """Triage結果を踏まえ、AIが自律的にアクション(ツール)を選んで実行する。"""
+    urgency = triage.get("urgency", {}).get("level", "Medium")
+    causes = "; ".join(c.get("cause", "") for c in triage.get("root_causes", [])[:3])
+    prompt = (f"設備={intake['equipment_name']} 症状={intake['symptom']} 緊急度={urgency}。"
+              f"原因候補: {causes}。状況に応じて必要なアクションのツールだけを呼べ。"
+              f"緊急度がLowなら何も呼ばなくてよい。")
+    msgs = [{"role": "system", "content": "あなたは製造現場のAction Agent。状況に応じ適切なツールのみ自律的に呼ぶ。"},
+            {"role": "user", "content": prompt}]
+    try:
+        resp = client.chat.completions.create(
+            model=AOAI_DEPLOYMENT, messages=msgs, tools=ACTION_TOOLS,
+            tool_choice="auto", temperature=0, max_tokens=400)
+    except Exception as e:  # noqa
+        return []
+    tcs = resp.choices[0].message.tool_calls or []
+    actions = []
+    for tc in tcs:
+        try:
+            args = json.loads(tc.function.arguments or "{}")
+        except Exception:  # noqa
+            args = {}
+        actions.append(_exec_tool(tc.function.name, args, intake, urgency))
+    return actions
+
+
+# ===========================================================================
+# Orchestrator — 4エージェントを順に動かし、実行トレースを記録して返す
+# ===========================================================================
+def orchestrate(client, intake, image_b64=None, use_feedback=True):
+    corpus = load_corpus()
+    all_feedback = load_feedback()
+    feedback = all_feedback if use_feedback else []
+    trace = []
+
+    # 1. Intake
+    trace.append({"agent": "Intake", "title": "入力を構造化",
+                  "detail": f"設備={intake['equipment_name']} / 症状={intake['symptom']} / "
+                            f"コード={intake.get('error_code','-')} / 画像={'有' if image_b64 else '無'}"})
+
+    # 2. Retrieval
+    results = retrieve(corpus, feedback, intake["equipment_id"], intake.get("error_code", ""),
+                       intake.get("free_text", ""), intake.get("symptom", ""))
+    counts = {LABEL[k]: len(v) for k, v in results.items()}
+    fb_used = sum(1 for docs in results.values() for d in docs if d.get("source") == "feedback")
+    trace.append({"agent": "Retrieval", "title": "資料を横断検索",
+                  "detail": "  ".join(f"{k}:{v}" for k, v in counts.items()) +
+                            f"  / 現場確定事例 {fb_used}件" + ("" if use_feedback else " (フィードバック未使用)")})
+
+    # 3. Triage
+    triage = run_triage(client, intake, results, image_b64)
+    rc = triage.get("root_causes", [{}])
+    trace.append({"agent": "Triage", "title": "緊急度・原因を判断",
+                  "detail": f"緊急度={triage.get('urgency',{}).get('level','-')} / "
+                            f"第一候補={rc[0].get('cause','-') if rc else '-'} "
+                            f"({int(rc[0].get('confidence',0)*100) if rc else 0}%)"})
+
+    # 4. Action (function calling — AIが自律的にツール実行)
+    actions = decide_and_act(client, intake, triage)
+    if actions:
+        trace.append({"agent": "Action", "title": "アクションを自律実行(function calling)",
+                      "detail": " / ".join(f"{a['tool']}→{a['result']}" for a in actions)})
+    else:
+        trace.append({"agent": "Action", "title": "アクション判断",
+                      "detail": "緊急度が低く、自動アクションは不要と判断"})
+
+    triage["trace"] = trace
+    triage["actions"] = actions
+    triage["feedback_used"] = fb_used
+    triage["use_feedback"] = use_feedback
+    return triage
+
+
+def followup(client, intake, question, use_feedback=True):
+    """トリアージ後のフォローアップ質問に、資料を根拠に回答する。"""
+    corpus = load_corpus()
+    feedback = load_feedback() if use_feedback else []
+    results = retrieve(corpus, feedback, intake.get("equipment_id", ""), intake.get("error_code", ""),
+                       f"{intake.get('free_text','')} {question}", intake.get("symptom", ""))
+    context = build_context(results)
+    resp = client.chat.completions.create(
+        model=AOAI_DEPLOYMENT,
+        messages=[
+            {"role": "system", "content": "渡された資料だけを根拠に、現場担当の質問へ簡潔に答える。推測で断定しない。"},
+            {"role": "user", "content": f"対象設備:{intake.get('equipment_name','')}\n資料:\n{context}\n\n質問:{question}"},
+        ], temperature=0.2, max_tokens=600)
+    return resp.choices[0].message.content
