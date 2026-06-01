@@ -83,3 +83,55 @@ body {
 *::-webkit-scrollbar-thumb:hover {
   background: #94a3b8;
 }
+
+/* ---- 印刷 / PDF（引継ぎ票） ---------------------------------------------- */
+.print-only {
+  display: none;
+}
+@media print {
+  .no-print {
+    display: none !important;
+  }
+  .print-only {
+    display: block !important;
+  }
+  /* アプリのクロム（ヘッダー・サイドバー）を除去して本文だけ印刷 */
+  .mantine-AppShell-header,
+  .mantine-AppShell-navbar {
+    display: none !important;
+  }
+  .mantine-AppShell-main {
+    padding: 0 !important;
+  }
+  .print-report {
+    max-width: 100% !important;
+  }
+  body {
+    background: #fff !important;
+  }
+  /* カードの影は印刷に出さない */
+  .mantine-Card-root {
+    box-shadow: none !important;
+  }
+  /* セクションを途中で割らない */
+  .mantine-Card-root,
+  .mantine-Paper-root {
+    break-inside: avoid;
+  }
+  @page {
+    margin: 12mm;
+  }
+}
+
+/* ---- サイドバー 履歴アイテム ---------------------------------------------- */
+.hist-item {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border-radius: 8px;
+  transition: background 0.12s ease;
+}
+.hist-item:hover {
+  background: var(--mantine-color-gray-1);
+}

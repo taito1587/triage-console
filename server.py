@@ -1,5 +1,6 @@
 """Manufacturing Triage Agent — FastAPI バックエンド。
 /api/* でトリアージAPIを提供し、frontend/dist のReact(Mantine)アプリを配信する。"""
+import uuid
 from pathlib import Path
 from collections import Counter
 
@@ -9,8 +10,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 import triage_core as core
+from routes_incident import router as incident_router
+from routes_eval import router as eval_router
 
 app = FastAPI(title="Manufacturing Triage Agent")
+app.include_router(incident_router)
+app.include_router(eval_router)
 ROOT = Path(__file__).parent
 DIST = ROOT / "frontend" / "dist"
 
@@ -102,7 +107,7 @@ def feedback(fb: Feedback):
     import datetime
     today = fb.date or datetime.date.today().isoformat()
     item = {
-        "doc_id": f"fb-{today}-{fb.equipment_id}", "equipment_id": fb.equipment_id,
+        "doc_id": f"fb-{today}-{fb.equipment_id}-{uuid.uuid4().hex[:6]}", "equipment_id": fb.equipment_id,
         "date": today, "line": "現場登録", "symptom": fb.symptom, "error_code": fb.error_code,
         "root_cause": fb.root_cause, "action_taken": fb.action_taken,
         "recovery_minutes": fb.recovery_minutes, "ai_was_correct": fb.ai_was_correct,
@@ -165,7 +170,7 @@ if DIST.exists():
 
     @app.get("/{path:path}")
     def spa(path: str):
-        f = DIST / path
-        if f.is_file():
+        f = (DIST / path).resolve()
+        if f.is_file() and f.is_relative_to(DIST.resolve()):
             return FileResponse(f)
         return FileResponse(DIST / "index.html")
