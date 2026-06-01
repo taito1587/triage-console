@@ -3,11 +3,13 @@ import {
   AppShell, Group, Stack, Box, Title, Text, Card, Badge, Button,
   Select, TextInput, Textarea, Progress, ThemeIcon, UnstyledButton, ActionIcon,
   Accordion, SimpleGrid, NumberInput, Paper, Loader, Center, Grid,
-  ScrollArea, Image, Switch, Tooltip, Burger, Divider, Checkbox,
+  ScrollArea, Image, Switch, Tooltip, Burger, Divider, Checkbox, Skeleton, Table, Modal,
 } from '@mantine/core'
 import { useDisclosure } from '@mantine/hooks'
 import { Dropzone, IMAGE_MIME_TYPE } from '@mantine/dropzone'
 import { notifications } from '@mantine/notifications'
+import Markdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import {
   IconAlertTriangle, IconSearch, IconChecklist, IconBolt, IconHistory,
   IconPhoto, IconSend, IconChartBar, IconBuildingFactory2, IconListSearch,
@@ -16,7 +18,7 @@ import {
   IconAlertCircle, IconX, IconForms, IconDatabaseSearch, IconStethoscope,
   IconActivityHeartbeat, IconBulb, IconChartHistogram, IconSitemap,
   IconPointFilled, IconClipboardPlus, IconPlayerStopFilled,
-  IconPrinter, IconPencil, IconShieldCheck,
+  IconPrinter, IconPencil, IconShieldCheck, IconDownload, IconInbox,
 } from '@tabler/icons-react'
 
 // ---- types ----------------------------------------------------------------
@@ -27,7 +29,7 @@ type Check = { order: number; action: string }
 type Similar = { title: string; date: string; cause: string; recovery_minutes: number; note: string }
 type Citation = { source_type: string; label: string; doc_id: string; text: string; is_feedback: boolean }
 type TraceStep = { agent: string; title: string; detail: string }
-type ActionTaken = { tool: string; args: Record<string, unknown>; result: string; detail?: string; executed: boolean }
+type ActionTaken = { tool: string; args: Record<string, unknown>; result: string; detail?: string; to?: string; executed: boolean }
 type Triage = {
   urgency: { level: string; reason: string }
   root_causes: Cause[]; first_checks: Check[]; similar_cases: Similar[]
@@ -53,15 +55,51 @@ const toolLabel = (t: string) => TOOL_LABEL[t] ?? t
 // 文中に紛れる doc-id を除去（"(id=trouble-…)" も "(参照: 作業手順書 id=proc-…)" も対応）
 // id= とその値だけを落とし、人間に読める「参照: 作業手順書」等は残す。空になった括弧は除去。
 const stripIds = (s: string) => (s || '')
-  .replace(/[,、]?\s*id=[^\s)）,、。]+/gi, '')   // machine id を除去
+  .replace(/[【[][^】\]]*(?:†|‡|↑|source)[^】\]]*[】\]]/gi, '') // Foundry等のファイル引用注釈【…†source】/[…†source]
+  .replace(/(?:過去トラブル|作業手順書|設備仕様|品質記録|文書|資料|参照)?\s*ID[:：]\s*[A-Za-z0-9][\w\-./]*/gi, '') // ラベル付きID「過去トラブルID: trouble-…」
+  .replace(/[,、]?\s*id=[^\s)）,、。]+/gi, '')   // machine id「id=…」を除去
+  .replace(/\s*(?:trouble|proc|spec|qa|fb|evt|equip|doc)-[A-Za-z0-9][\w\-./]*/gi, '') // 裸のdoc-idトークン
   .replace(/[（(]\s*[)）]/g, '')                  // 空になった括弧を除去
   .replace(/\s+([)）])/g, '$1')                   // 閉じ括弧前の余分な空白
   .replace(/[（(]\s*[、,]\s*/g, '（')              // 開き括弧直後の区切りを整理
+  .replace(/^[\s、。]+/, '')                       // 先頭に残った余分な句読点
   .replace(/\s{2,}/g, ' ')
   .trim()
-// 通知の送信失敗など内部例外をユーザー表示から除去
-const cleanDetail = (s?: string) => (s || '').replace(/\n*[（(]\s*送信失敗[:：][^)）]*[)）]/g, '').trim()
+// 通知本文を整形: notify_teams のヘッダ(🚨…/設備…症状…)・送信失敗の内部例外を除去し、本文のみ残す
+const cleanDetail = (s?: string) => (s || '')
+  .replace(/^\s*🚨[^\n]*\n[^\n]*症状[^\n]*\n?/, '')  // 🚨 製造トリアージ通知…/設備:…症状:… のヘッダ2行
+  .replace(/\n*[（(]\s*送信失敗[:：][^)）]*[)）]/g, '')
+  .trim()
 const engineLabel = (e: string) => (e === 'foundry' ? 'Azure AI Foundry' : 'ローカル推論')
+
+// ビュー間でフェッチ結果をキャッシュ(タブ再訪時の空白リフェッチを防ぐ / stale-while-revalidate)
+const _viewCache: Record<string, unknown> = {}
+function useCached<T>(key: string, fetcher: () => Promise<T>) {
+  const [data, setData] = useState<T | null>(() => (key in _viewCache ? (_viewCache[key] as T) : null))
+  const [loading, setLoading] = useState(!(key in _viewCache))
+  const refresh = () => {
+    fetcher().then((d) => { _viewCache[key] = d; setData(d) }).catch(() => {}).finally(() => setLoading(false))
+  }
+  useEffect(() => { refresh() }, []) // eslint-disable-line react-hooks/exhaustive-deps
+  return { data, loading, refresh, setData }
+}
+
+// カード形のスケルトン(ローディングの空白感を解消)
+function CardSkeleton({ rows = 3, h = 'lg' }: { rows?: number; h?: string }) {
+  return (
+    <Card p={h}>
+      <Skeleton h={11} w={150} mb="lg" radius="sm" />
+      <Stack gap="md">
+        {Array.from({ length: rows }).map((_, i) => (
+          <div key={i}>
+            <Skeleton h={11} w={`${55 + (i % 3) * 10}%`} mb={8} radius="sm" />
+            <Skeleton h={8} w="100%" radius="xl" />
+          </div>
+        ))}
+      </Stack>
+    </Card>
+  )
+}
 
 async function fileToB64(file: File): Promise<string> {
   return new Promise((res) => {
@@ -72,6 +110,18 @@ async function fileToB64(file: File): Promise<string> {
 }
 
 // 音声入力 — ブラウザ録音(MediaRecorder) → Azure OpenAI(whisper) で文字起こし
+// 録音フォーマットをブラウザ横断で選定(Chrome=webm / Safari=mp4)。いずれも whisper 対応。
+const pickRecMime = (): string => {
+  const cands = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/mpeg', 'audio/ogg']
+  const MR = typeof MediaRecorder !== 'undefined' ? MediaRecorder : undefined
+  for (const m of cands) if (MR?.isTypeSupported?.(m)) return m
+  return ''
+}
+const extOf = (mime: string): string => {
+  const base = (mime || '').split(';')[0]
+  return base.includes('mp4') ? 'mp4' : base.includes('mpeg') ? 'mp3' : base.includes('ogg') ? 'ogg' : 'webm'
+}
+
 function useDictation(onText: (t: string) => void) {
   const [recording, setRecording] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -79,19 +129,25 @@ function useDictation(onText: (t: string) => void) {
   const chunksRef = useRef<Blob[]>([])
   const toggle = async () => {
     if (recording) { mrRef.current?.stop(); return }
+    if (typeof MediaRecorder === 'undefined') {
+      notifications.show({ color: 'yellow', title: '音声入力', message: 'このブラウザは録音に対応していません' }); return
+    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      const mr = new MediaRecorder(stream)
+      const mime = pickRecMime()
+      const mr = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream)
       chunksRef.current = []
       mr.ondataavailable = (e) => { if (e.data.size) chunksRef.current.push(e.data) }
       mr.onstop = async () => {
         stream.getTracks().forEach((t) => t.stop())
         setRecording(false); setBusy(true)
         try {
-          const blob = new Blob(chunksRef.current, { type: 'audio/webm' })
-          const fd = new FormData(); fd.append('file', blob, 'audio.webm')
+          // 実際の録音 MIME に合わせて Blob 種別とファイル名拡張子を一致させる
+          const actual = mr.mimeType || mime || 'audio/webm'
+          const blob = new Blob(chunksRef.current, { type: actual })
+          const fd = new FormData(); fd.append('file', blob, `audio.${extOf(actual)}`)
           const res = await fetch('/api/transcribe', { method: 'POST', body: fd })
-          const d = await res.json()
+          const d = await res.json().catch(() => ({}))
           if (res.ok && d.text) onText(d.text)
           else notifications.show({ color: 'red', title: '音声入力', message: d.detail || '文字起こしに失敗しました' })
         } catch (err) {
@@ -261,7 +317,7 @@ export default function App() {
                       </ThemeIcon>
                       <Box style={{ flex: 1, minWidth: 0 }}>
                         <Text size="sm" fw={on ? 650 : 550} c={on ? 'brand.7' : 'gray.8'} lh={1.25}>{n.label}</Text>
-                        <Text size="xs" c="dimmed" lh={1.3} truncate>{n.desc}</Text>
+                        <Text size="xs" c="dimmed" lh={1.3} truncate miw={0}>{n.desc}</Text>
                       </Box>
                     </UnstyledButton>
                   )
@@ -287,8 +343,8 @@ export default function App() {
                       <UnstyledButton key={h.id} className="hist-item" onClick={() => restore(h)}>
                         <Box w={7} h={7} bg={`${u.color}.6`} style={{ borderRadius: 999, flexShrink: 0, marginTop: 5 }} />
                         <Box style={{ flex: 1, minWidth: 0 }}>
-                          <Text size="xs" fw={600} c="gray.8" truncate>{h.equipment_name}</Text>
-                          <Text size="10px" c="dimmed" truncate>{h.top_cause || '—'}</Text>
+                          <Text size="xs" fw={600} c="gray.8" truncate miw={0}>{h.equipment_name}</Text>
+                          <Text size="10px" c="dimmed" truncate miw={0}>{h.top_cause || '—'}</Text>
                           <Text size="10px" c="dimmed">{relTime(h.ts)}</Text>
                         </Box>
                       </UnstyledButton>
@@ -331,7 +387,7 @@ export default function App() {
 
           {active === 'incidents' && (
             <>
-              <PageHead title="自律インシデント・ボード" desc="設備アラームを取り込み、エージェントが自動トリアージ。High は承認を経て保全へ。" />
+              <PageHead title="インシデント・ボード" desc="設備アラームを取り込み、緊急度を自動判定して整理します。High は承認後に保全へ通知します。" />
               <IncidentBoard />
             </>
           )}
@@ -437,7 +493,7 @@ function InputForm(p: InputProps) {
           autosize minRows={3} maxLength={FREE_MAX} value={p.free}
           onChange={(e) => p.setFree(e.currentTarget.value)} placeholder="例: 搬送部から異音。直前に段取り替え。"
           inputWrapperOrder={['label', 'input', 'description']}
-          description={<Text size="xs" c={p.free.length > FREE_MAX * 0.9 ? 'orange.7' : 'dimmed'} ta="right" className="tnum">{p.free.length} / {FREE_MAX}</Text>} />
+          description={<Text component="span" display="block" size="xs" c={p.free.length > FREE_MAX * 0.9 ? 'orange.7' : 'dimmed'} ta="right" className="tnum">{p.free.length} / {FREE_MAX}</Text>} />
 
         <div>
           <Text size="sm" fw={500} mb={6}>画像 <Text span size="xs" c="dimmed">（任意・GPT-4o vision で解析）</Text></Text>
@@ -579,7 +635,7 @@ function ProgressStages() {
 
         <div>
           <Group justify="space-between" mb={6} wrap="nowrap" gap="sm">
-            <Text size="xs" fw={600} c="gray.7" truncate>{PIPELINE[activeIdx].title}</Text>
+            <Text size="xs" fw={600} c="gray.7" truncate miw={0}>{PIPELINE[activeIdx].title}</Text>
             <Text size="xs" fw={700} c="brand.7" className="tnum" style={{ flexShrink: 0 }}>{Math.round(pct)}%</Text>
           </Group>
           <Progress value={pct} radius="xl" size="md" color="brand" striped animated />
@@ -659,7 +715,7 @@ function SummaryBar({ intake, result, imgPreview, onEdit }: { intake: Intake; re
         <Group gap="sm" wrap="nowrap" style={{ minWidth: 0 }}>
           <ThemeIcon variant="light" color="gray" size={36} radius="md"><IconBuildingFactory2 size={19} /></ThemeIcon>
           <Box style={{ minWidth: 0 }}>
-            <Text fw={650} size="sm" c="gray.9" truncate>{intake.equipment_name}</Text>
+            <Text fw={650} size="sm" c="gray.9" truncate miw={0}>{intake.equipment_name}</Text>
             <Group gap={6} mt={3} wrap="wrap">
               <Badge variant="default" radius="sm" size="sm">コード {intake.error_code || '—'}</Badge>
               <Badge variant="default" radius="sm" size="sm">{intake.symptom}</Badge>
@@ -742,7 +798,7 @@ function UrgencyHero({ result, onRecord }: { result: Triage; onRecord: () => voi
               <Text size="xs" c="dimmed" fw={600} style={{ flexShrink: 0 }}>最有力原因</Text>
               <Text size="sm" fw={800} c={`${u.color}.7`} className="tnum" style={{ flexShrink: 0 }}>{Math.round(top.confidence * 100)}%</Text>
             </Group>
-            <Text size="sm" fw={650} c="gray.8" truncate mb={6}>{top.cause}</Text>
+            <Text size="sm" fw={650} c="gray.8" truncate miw={0} mb={6}>{top.cause}</Text>
             <Progress value={top.confidence * 100} color={u.color} radius="xl" size="sm" />
           </Card>
         )}
@@ -792,7 +848,7 @@ function Causes({ causes }: { causes: Cause[] }) {
             <Group justify="space-between" mb={6} wrap="nowrap" align="center" gap="sm">
               <Group gap={8} wrap="nowrap" style={{ minWidth: 0 }}>
                 <Badge variant="filled" color={c.rank === 1 ? 'brand' : 'gray'} radius="sm" size="sm" style={{ flexShrink: 0 }}>{c.rank}</Badge>
-                <Text fw={650} size="sm" c="gray.8" truncate>{c.cause}</Text>
+                <Text fw={650} size="sm" c="gray.8" truncate miw={0}>{c.cause}</Text>
               </Group>
               <Text size="sm" fw={700} c="brand.7" className="tnum" style={{ flexShrink: 0 }}>{Math.round(c.confidence * 100)}%</Text>
             </Group>
@@ -808,23 +864,33 @@ function Causes({ causes }: { causes: Cause[] }) {
 // システムが自動で実施したこと
 function SystemActions({ actions }: { actions: ActionTaken[] }) {
   return (
-    <Card p="lg" style={{ borderLeft: '3px solid var(--mantine-color-orange-5)' }}>
-      <CardHead icon={<IconRobot size={18} />} title="システムが自動で実施したこと" sub="エージェントが function calling で判断・実行" />
-      <Stack gap="sm">
+    <Card p="lg">
+      <CardHead icon={<IconBolt size={18} />} title="自動実行アクション" sub="緊急度に応じて自動で実行した処理" />
+      <Stack gap="xs">
         {actions.map((a, i) => {
           const sim = /シミュレート|デモ/.test(a.result)
-          const detail = cleanDetail(a.detail)
+          const msg = stripIds(cleanDetail(a.detail))
+          const notify = a.tool === 'escalate_to_maintenance'
           return (
-            <Paper key={i} withBorder p="sm" radius="md" bg="gray.0">
-              <Group gap="xs" wrap="nowrap" mb={detail ? 4 : 0}>
-                <ThemeIcon size={20} radius="xl" variant="light" color={sim ? 'gray' : 'teal'} style={{ flexShrink: 0 }}>
-                  <IconCheck size={12} />
-                </ThemeIcon>
-                <Badge color="orange" variant="light" radius="sm" size="sm" tt="none" style={{ flexShrink: 0 }}>{toolLabel(a.tool)}</Badge>
-                <Text size="sm" fw={600} c="gray.8">{a.result}</Text>
-                <Badge variant="default" radius="sm" size="xs" ml="auto" visibleFrom="xs">{sim ? 'シミュレート' : '実施済み'}</Badge>
+            <Paper key={i} withBorder p="sm" radius="md">
+              <Group justify="space-between" wrap="nowrap" align="flex-start" gap="sm" mb={msg ? 8 : 0}>
+                <Group gap={8} wrap="nowrap" style={{ minWidth: 0 }}>
+                  <Box c="gray.5" mt={1} style={{ display: 'flex', flexShrink: 0 }}>
+                    {notify ? <IconSend size={15} /> : <IconShieldCheck size={15} />}
+                  </Box>
+                  <Text size="sm" fw={650} c="gray.8" truncate miw={0}>{toolLabel(a.tool)}{notify && a.to ? ` → ${a.to}` : ''}</Text>
+                </Group>
+                <Badge variant="default" radius="sm" size="sm" c={sim ? 'gray.6' : 'teal.7'}
+                  leftSection={<Box c={sim ? 'gray.5' : 'teal.6'} style={{ display: 'flex' }}><IconPointFilled size={9} /></Box>}
+                  style={{ flexShrink: 0 }}>
+                  {sim ? '実行(シミュレート)' : '実行済み'}
+                </Badge>
               </Group>
-              {detail && <Text size="xs" c="dimmed" style={{ whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>{detail}</Text>}
+              {msg && (
+                <Paper bg="gray.0" p="xs" radius="sm" ml={23} withBorder>
+                  <Text size="xs" c="gray.7" style={{ whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{msg}</Text>
+                </Paper>
+              )}
             </Paper>
           )
         })}
@@ -842,7 +908,7 @@ function SimilarCases({ cases }: { cases: Similar[] }) {
         {cases.map((s, i) => (
           <Paper key={i} withBorder p="sm" radius="md" bg="gray.0">
             <Group justify="space-between" wrap="nowrap" gap="sm">
-              <Text fw={600} size="sm" c="gray.8" truncate>{s.title}</Text>
+              <Text fw={600} size="sm" c="gray.8" truncate miw={0}>{s.title}</Text>
               <Badge variant="default" radius="sm" size="sm" leftSection={<IconClock size={11} />} style={{ flexShrink: 0 }}>{s.recovery_minutes}分で復旧</Badge>
             </Group>
             <Text size="xs" c="dimmed" mt={4}>{s.date} ・ 原因: {s.cause} — {s.note}</Text>
@@ -936,19 +1002,42 @@ function ProcessDetails({ result }: { result: Triage }) {
 }
 
 // ---- フォローアップ質問 ----------------------------------------------------
+// Markdown 回答(Mantine 調の体裁・サイズ控えめ)
+function MarkdownAnswer({ text }: { text: string }) {
+  return (
+    <div className="md-answer">
+      <Markdown remarkPlugins={[remarkGfm]}>{text}</Markdown>
+    </div>
+  )
+}
+
 function FollowupPanel({ intake }: { intake: Intake }) {
   const [q, setQ] = useState('')
   const [log, setLog] = useState<{ q: string; a: string }[]>([])
   const [loading, setLoading] = useState(false)
-  const ask = async () => {
-    if (!q.trim()) return
-    const question = q; setQ(''); setLoading(true)
+  const ask = async (preset?: string) => {
+    const question = (preset ?? q).trim()
+    if (!question || loading) return
+    setQ(''); setLoading(true)
+    const idx = log.length
+    setLog((l) => [...l, { q: question, a: '' }])
     try {
-      const res = await fetch('/api/followup', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...intake, question }) })
-      const d = await res.json()
-      setLog((l) => [...l, { q: question, a: d.answer ?? d.detail ?? '回答を取得できませんでした' }])
+      const res = await fetch('/api/followup/stream', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...intake, question }),
+      })
+      if (!res.ok || !res.body) throw new Error()
+      const reader = res.body.getReader()
+      const dec = new TextDecoder()
+      let acc = ''
+      for (; ;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        acc += dec.decode(value, { stream: true })
+        setLog((l) => l.map((e, i) => (i === idx ? { ...e, a: acc } : e)))
+      }
     } catch {
-      setLog((l) => [...l, { q: question, a: '回答を取得できませんでした。時間をおいて再度お試しください。' }])
+      setLog((l) => l.map((e, i) => (i === idx ? { ...e, a: '回答を取得できませんでした。時間をおいて再度お試しください。' } : e)))
     } finally { setLoading(false) }
   }
   return (
@@ -958,27 +1047,31 @@ function FollowupPanel({ intake }: { intake: Intake }) {
         {log.length === 0 && (
           <Group gap={6} wrap="wrap">
             {['交換手順を教えて', '再発を防ぐには？', '点検頻度の目安は？'].map((s) => (
-              <Button key={s} variant="default" size="compact-sm" radius="xl" onClick={() => setQ(s)}>{s}</Button>
+              <Button key={s} variant="default" size="compact-sm" radius="xl" disabled={loading} onClick={() => ask(s)}>{s}</Button>
             ))}
           </Group>
         )}
-        {log.map((e, i) => (
-          <Box key={i}>
-            <Group gap={8} mb={6} align="flex-start" wrap="nowrap">
-              <Badge variant="filled" color="dark" radius="sm" size="sm" style={{ flexShrink: 0 }}>Q</Badge>
-              <Text size="sm" fw={600} c="gray.8">{e.q}</Text>
-            </Group>
-            <Paper bg="gray.0" p="sm" radius="md" withBorder>
-              <Text size="sm" c="gray.7" style={{ whiteSpace: 'pre-wrap', lineHeight: 1.7 }}>{stripIds(e.a)}</Text>
-            </Paper>
-          </Box>
-        ))}
-        {loading && <Group gap="xs"><Loader size="xs" /><Text size="sm" c="dimmed">回答を作成中…</Text></Group>}
+        {log.map((e, i) => {
+          const streaming = loading && i === log.length - 1 && !e.a
+          return (
+            <Box key={i}>
+              <Group gap={8} mb={6} align="flex-start" wrap="nowrap">
+                <Badge variant="filled" color="dark" radius="sm" size="sm" style={{ flexShrink: 0 }}>Q</Badge>
+                <Text size="sm" fw={600} c="gray.8">{e.q}</Text>
+              </Group>
+              <Paper bg="gray.0" p="sm" radius="md" withBorder>
+                {streaming
+                  ? <Group gap="xs"><Loader size="xs" /><Text size="sm" c="dimmed">回答を作成中…</Text></Group>
+                  : <MarkdownAnswer text={stripIds(e.a)} />}
+              </Paper>
+            </Box>
+          )
+        })}
         <Group gap="xs" wrap="nowrap">
           <TextInput style={{ flex: 1, minWidth: 0 }} placeholder="例: ローラー交換の手順は？" value={q}
             onChange={(e) => setQ(e.currentTarget.value)} onKeyDown={(e) => e.key === 'Enter' && ask()} />
           <MicIcon size={36} onText={(t) => setQ(q ? `${q} ${t}` : t)} />
-          <Button onClick={ask} loading={loading} leftSection={<IconSend size={15} />}>質問</Button>
+          <Button onClick={() => ask()} loading={loading} leftSection={<IconSend size={15} />}>質問</Button>
         </Group>
       </Stack>
     </Card>
@@ -1069,10 +1162,16 @@ const LEARN_STEPS = [
 // ---- ナレッジ集計 ----------------------------------------------------------
 type Knowledge = { total: number; avg_recovery: number; estimated_saved_minutes: number; top_causes: { cause: string; count: number }[]; by_equipment: { equipment: string; count: number }[]; longest: { date: string; equipment_id: string; cause: string; minutes: number }[] }
 function KnowledgeView() {
-  const [k, setK] = useState<Knowledge | null>(null)
-  const load = () => fetch('/api/knowledge').then((r) => r.json()).then(setK).catch(() => {})
-  useEffect(() => { load() }, [])
-  if (!k) return <Center mih={240}><Loader size="sm" /></Center>
+  const { data: k, loading, refresh } = useCached<Knowledge>('knowledge', () => fetch('/api/knowledge').then((r) => r.json()))
+  const load = refresh
+  if (!k) {
+    return loading ? (
+      <Stack gap="md">
+        <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="md">{[0, 1, 2].map((i) => <Card key={i} p="lg"><Skeleton h={10} w="60%" mb="md" /><Skeleton h={30} w="40%" /></Card>)}</SimpleGrid>
+        <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md"><CardSkeleton rows={5} /><CardSkeleton rows={5} /></SimpleGrid>
+      </Stack>
+    ) : <Center mih={240}><Text size="sm" c="dimmed">データを取得できませんでした</Text></Center>
+  }
   const maxEq = Math.max(...k.by_equipment.map((e) => e.count), 1)
   const maxCause = Math.max(...k.top_causes.map((c) => c.count), 1)
   return (
@@ -1094,7 +1193,7 @@ function KnowledgeView() {
             {k.top_causes.map((c, i) => (
               <div key={i}>
                 <Group justify="space-between" mb={4} wrap="nowrap" gap="sm">
-                  <Text size="sm" c="gray.7" truncate>{c.cause}</Text>
+                  <Text size="sm" c="gray.7" truncate miw={0}>{c.cause}</Text>
                   <Text size="xs" c="dimmed" className="tnum" style={{ flexShrink: 0 }}>{c.count}件</Text>
                 </Group>
                 <Progress value={(c.count / maxCause) * 100} color="brand" radius="xl" size="sm" />
@@ -1108,7 +1207,7 @@ function KnowledgeView() {
             {k.by_equipment.map((e, i) => (
               <div key={i}>
                 <Group justify="space-between" mb={4} wrap="nowrap" gap="sm">
-                  <Text size="sm" c="gray.7" truncate>{e.equipment}</Text>
+                  <Text size="sm" c="gray.7" truncate miw={0}>{e.equipment}</Text>
                   <Text size="xs" c="dimmed" className="tnum" style={{ flexShrink: 0 }}>{e.count}</Text>
                 </Group>
                 <Progress value={(e.count / maxEq) * 100} color="gray.5" radius="xl" size="sm" />
@@ -1127,7 +1226,7 @@ function KnowledgeView() {
               <Group gap="xs" wrap="nowrap" style={{ minWidth: 0 }}>
                 <Text size="xs" c="dimmed" className="tnum" w={84} style={{ flexShrink: 0 }} visibleFrom="xs">{t.date}</Text>
                 <Badge variant="default" radius="sm" size="sm" style={{ flexShrink: 0 }}>{t.equipment_id}</Badge>
-                <Text size="sm" c="gray.7" truncate>{t.cause}</Text>
+                <Text size="sm" c="gray.7" truncate miw={0}>{t.cause}</Text>
               </Group>
               <Badge color="orange" variant="light" radius="sm" size="sm" className="tnum" style={{ flexShrink: 0 }}>{t.minutes}分</Badge>
             </Group>
@@ -1212,10 +1311,9 @@ const STATUS_META: Record<string, { label: string; color: string }> = {
 }
 
 function IncidentBoard() {
-  const [board, setBoard] = useState<Board | null>(null)
+  const { data: board, loading, refresh } = useCached<Board>('incidents', () => fetch('/api/incidents').then((r) => r.json()))
   const [busy, setBusy] = useState(false)
-  const load = () => fetch('/api/incidents').then((r) => r.json()).then(setBoard).catch(() => {})
-  useEffect(() => { load() }, [])
+  const load = refresh
   const ingest = async () => {
     setBusy(true)
     try {
@@ -1229,12 +1327,9 @@ function IncidentBoard() {
   const k = board?.kpi
   return (
     <Stack gap="md">
-      <Group justify="space-between" wrap="wrap" gap="sm">
-        <Text size="sm" c="dimmed" style={{ maxWidth: 560 }}>設備アラームを取り込むと、エージェントが全件を並列で自動トリアージし、緊急度順に積みます。</Text>
-        <Group gap="xs">
-          <Button variant="default" size="xs" leftSection={<IconRefresh size={14} />} onClick={load}>更新</Button>
-          <Button size="xs" leftSection={<IconRobot size={15} />} loading={busy} onClick={ingest}>サンプルアラームを取り込み</Button>
-        </Group>
+      <Group justify="flex-end" gap="xs" wrap="nowrap">
+        <Button variant="default" size="xs" leftSection={<IconRefresh size={14} />} onClick={load}>更新</Button>
+        <Button variant="default" size="xs" leftSection={<IconDownload size={15} />} loading={busy} onClick={ingest}>サンプルを取り込み</Button>
       </Group>
 
       {k && (
@@ -1242,17 +1337,28 @@ function IncidentBoard() {
           <MiniStat label="承認待ち" value={k.awaiting_approval} color="red" />
           <MiniStat label="対応待ち / 対応中" value={k.triaged + k.escalated} color="orange" />
           <MiniStat label="解決済み" value={k.resolved} color="teal" />
-          <MiniStat label="AI 的中率" value={k.ai_hit_rate == null ? '—' : `${k.ai_hit_rate}%`} color="brand" />
+          <MiniStat label="診断的中率" value={k.ai_hit_rate == null ? '—' : `${k.ai_hit_rate}%`} color="gray" />
         </SimpleGrid>
       )}
 
-      {busy && !board?.incidents?.length && (
-        <Center mih={160}><Stack align="center" gap="xs"><Loader /><Text size="sm" c="dimmed">取り込んだアラームを並列トリアージ中…</Text></Stack></Center>
+      {busy && !board?.incidents?.length ? (
+        <Card p="xl"><Center mih={180}><Stack align="center" gap="sm" maw={360}>
+          <Loader />
+          <Text fw={650} c="gray.8">アラームをトリアージ中…</Text>
+          <Text size="sm" c="dimmed" ta="center">各アラームを自動診断しています（通常 10〜30 秒）。</Text>
+        </Stack></Center></Card>
+      ) : !board ? (
+        loading ? (
+          <Stack gap="md">
+            <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="sm">{[0, 1, 2, 3].map((i) => <Card key={i} p="md"><Skeleton h={9} w="70%" mb={10} /><Skeleton h={24} w="40%" /></Card>)}</SimpleGrid>
+            <Stack gap="sm">{[0, 1, 2].map((i) => <Card key={i} p="md"><Group><Skeleton h={36} w={36} radius="md" /><Box style={{ flex: 1 }}><Skeleton h={11} w="50%" mb={8} /><Skeleton h={9} w="80%" /></Box></Group></Card>)}</Stack>
+          </Stack>
+        ) : <Center mih={160}><Text size="sm" c="dimmed">データを取得できませんでした</Text></Center>
+      ) : board.incidents.length === 0 ? (
+        <EmptyBoard onIngest={ingest} busy={busy} />
+      ) : (
+        <IncidentTable incidents={board.incidents} onChange={load} />
       )}
-
-      {!board ? <Center mih={160}><Loader /></Center>
-        : board.incidents.length === 0 ? <EmptyBoard onIngest={ingest} busy={busy} />
-          : <Stack gap="sm">{board.incidents.map((i) => <IncidentCard key={i.id} inc={i} onChange={load} />)}</Stack>}
     </Stack>
   )
 }
@@ -1260,8 +1366,11 @@ function IncidentBoard() {
 function MiniStat({ label, value, color }: { label: string; value: number | string; color: string }) {
   return (
     <Card p="md">
-      <Text size="xs" c="dimmed">{label}</Text>
-      <Text fw={800} fz={26} c={`${color}.7`} className="tnum" mt={4} lh={1}>{value}</Text>
+      <Group gap={6} wrap="nowrap" mb={6}>
+        <Box w={8} h={8} bg={`${color}.5`} style={{ borderRadius: 2, flexShrink: 0 }} />
+        <Text size="xs" c="dimmed" fw={500} truncate miw={0}>{label}</Text>
+      </Group>
+      <Text fw={700} fz={26} c="gray.9" className="tnum" lh={1}>{value}</Text>
     </Card>
   )
 }
@@ -1269,85 +1378,123 @@ function MiniStat({ label, value, color }: { label: string; value: number | stri
 function EmptyBoard({ onIngest, busy }: { onIngest: () => void; busy: boolean }) {
   return (
     <Card p="xl"><Center mih={200}><Stack align="center" gap="sm" maw={440}>
-      <ThemeIcon variant="light" color="brand" size={52} radius="md"><IconRobot size={26} /></ThemeIcon>
-      <Text fw={650} c="gray.8">インシデントはまだありません</Text>
-      <Text size="sm" c="dimmed" ta="center">設備アラームのサンプルを取り込むと、エージェントが全件を自動トリアージし、緊急度順にここへ積みます。</Text>
-      <Button leftSection={<IconRobot size={15} />} loading={busy} onClick={onIngest} mt={4}>サンプルアラームを取り込み</Button>
+      <ThemeIcon variant="light" color="gray" size={48} radius="md"><IconInbox size={24} stroke={1.6} /></ThemeIcon>
+      <Text fw={650} c="gray.8">インシデントはありません</Text>
+      <Text size="sm" c="dimmed" ta="center">設備アラームのサンプルを取り込むと、自動でトリアージして緊急度順に一覧表示します。</Text>
+      <Button variant="default" leftSection={<IconDownload size={15} />} loading={busy} onClick={onIngest} mt={4}>サンプルを取り込み</Button>
     </Stack></Center></Card>
   )
 }
 
-function IncidentCard({ inc, onChange }: { inc: Incident; onChange: () => void }) {
-  const [open, setOpen] = useState(false)
-  const [cause, setCause] = useState(inc.top_cause)
-  const [rec, setRec] = useState<number | string>(20)
-  const [note, setNote] = useState('')
-  const [busy, setBusy] = useState(false)
-  const u = urgency(inc.urgency)
-  const st = STATUS_META[inc.status] ?? { label: inc.status, color: 'gray' }
-  const approve = async () => {
-    setBusy(true)
+function IncidentTable({ incidents, onChange }: { incidents: Incident[]; onChange: () => void }) {
+  const [resolving, setResolving] = useState<Incident | null>(null)
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const approve = async (inc: Incident) => {
+    setBusyId(inc.id)
     try {
       const res = await fetch(`/api/incidents/${inc.id}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
       if (!res.ok) throw new Error()
       notifications.show({ color: 'teal', icon: <IconCheck size={16} />, title: '承認しました', message: '保全へ通知し、対応中に移行しました' }); onChange()
     } catch {
       notifications.show({ color: 'red', title: '承認に失敗しました', message: '時間をおいて再度お試しください' })
-    } finally { setBusy(false) }
+    } finally { setBusyId(null) }
   }
-  const resolve = async () => {
+  const rows = incidents.map((inc) => {
+    const u = urgency(inc.urgency)
+    const st = STATUS_META[inc.status] ?? { label: inc.status, color: 'gray' }
+    const ts = (inc.created_at || '').replace('T', ' ').slice(0, 16)
+    return (
+      <Table.Tr key={inc.id}>
+        <Table.Td>
+          <Badge size="sm" radius="sm" variant="light" color={u.color}
+            leftSection={<Box c={`${u.color}.7`} style={{ display: 'flex' }}><IconPointFilled size={8} /></Box>}>{u.label}</Badge>
+        </Table.Td>
+        <Table.Td><Text size="sm" fw={600} c="gray.9" style={{ whiteSpace: 'nowrap' }}>{inc.equipment_name}</Text></Table.Td>
+        <Table.Td>
+          <Group gap={4} wrap="nowrap">
+            <Badge size="xs" variant="default" radius="sm" c="gray.6" tt="none">{inc.symptom}</Badge>
+            {inc.error_code && <Badge size="xs" variant="default" radius="sm" c="gray.6" tt="none">{inc.error_code}</Badge>}
+          </Group>
+        </Table.Td>
+        <Table.Td miw={200}><Text size="sm" c="gray.7" lineClamp={2}>{inc.top_cause || '—'}</Text></Table.Td>
+        <Table.Td><Text size="sm" fw={600} c="gray.8" className="tnum">{inc.confidence > 0 ? `${Math.round(inc.confidence * 100)}%` : '—'}</Text></Table.Td>
+        <Table.Td>
+          <Text size="xs" c="gray.7">{inc.source}</Text>
+          <Text size="xs" c="dimmed" className="tnum" style={{ whiteSpace: 'nowrap' }}>{ts}</Text>
+        </Table.Td>
+        <Table.Td><Badge color={st.color} variant="light" radius="sm" size="sm">{st.label}</Badge></Table.Td>
+        <Table.Td>
+          {inc.status === 'resolved' ? (
+            <Tooltip label={inc.resolution ? `${inc.resolution.root_cause} ・ 復旧${inc.resolution.recovery_minutes}分` : '解決済み'} withArrow>
+              <Group gap={4} wrap="nowrap" justify="flex-end"><ThemeIcon size={18} radius="xl" variant="light" color="teal"><IconCheck size={11} /></ThemeIcon><Text size="xs" c="teal.7">解決済み</Text></Group>
+            </Tooltip>
+          ) : (
+            <Group gap={6} wrap="nowrap" justify="flex-end">
+              {inc.status === 'awaiting_approval' && (
+                <Button size="compact-xs" leftSection={<IconShieldCheck size={13} />} loading={busyId === inc.id} onClick={() => approve(inc)}>承認</Button>
+              )}
+              <Button size="compact-xs" variant="default" leftSection={<IconClipboardPlus size={13} />} onClick={() => setResolving(inc)}>解決</Button>
+            </Group>
+          )}
+        </Table.Td>
+      </Table.Tr>
+    )
+  })
+  return (
+    <Card p={0} withBorder>
+      <Table.ScrollContainer minWidth={960}>
+        <Table striped highlightOnHover verticalSpacing="sm" horizontalSpacing="md" stickyHeader>
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th>緊急度</Table.Th>
+              <Table.Th>設備</Table.Th>
+              <Table.Th>症状 / コード</Table.Th>
+              <Table.Th>推定原因</Table.Th>
+              <Table.Th>確信度</Table.Th>
+              <Table.Th>検知</Table.Th>
+              <Table.Th>状態</Table.Th>
+              <Table.Th ta="right">操作</Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>{rows}</Table.Tbody>
+        </Table>
+      </Table.ScrollContainer>
+      <ResolveModal inc={resolving} onClose={() => setResolving(null)} onDone={() => { setResolving(null); onChange() }} />
+    </Card>
+  )
+}
+
+function ResolveModal({ inc, onClose, onDone }: { inc: Incident | null; onClose: () => void; onDone: () => void }) {
+  const [cause, setCause] = useState('')
+  const [rec, setRec] = useState<number | string>(20)
+  const [note, setNote] = useState('')
+  const [busy, setBusy] = useState(false)
+  useEffect(() => { if (inc) { setCause(inc.top_cause || ''); setRec(20); setNote('') } }, [inc])
+  const submit = async () => {
+    if (!inc) return
     setBusy(true)
     try {
       const res = await fetch(`/api/incidents/${inc.id}/resolve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ root_cause: cause, recovery_minutes: Number(rec), note }) })
       if (!res.ok) throw new Error()
-      notifications.show({ color: 'teal', icon: <IconCheck size={16} />, title: '解決を記録', message: '現場確定事例として学習に還流しました' }); setOpen(false); onChange()
+      notifications.show({ color: 'teal', icon: <IconCheck size={16} />, title: '解決を記録', message: '現場確定事例として学習に還流しました' }); onDone()
     } catch {
       notifications.show({ color: 'red', title: '登録に失敗しました', message: '時間をおいて再度お試しください' })
     } finally { setBusy(false) }
   }
   return (
-    <Card p="md" style={{ borderLeft: `3px solid var(--mantine-color-${u.color}-5)` }}>
-      <Group justify="space-between" wrap="nowrap" align="flex-start" gap="sm">
-        <Group gap="sm" wrap="nowrap" style={{ minWidth: 0 }}>
-          <ThemeIcon color={u.color} variant="light" size={36} radius="md" style={{ flexShrink: 0 }}><u.icon size={18} /></ThemeIcon>
-          <Box style={{ minWidth: 0 }}>
-            <Group gap={6} wrap="wrap">
-              <Text fw={650} size="sm" c="gray.8" truncate>{inc.equipment_name}</Text>
-              <Badge size="xs" variant="default" radius="sm">{inc.symptom}</Badge>
-              {inc.error_code && <Badge size="xs" variant="default" radius="sm">{inc.error_code}</Badge>}
-            </Group>
-            <Text size="xs" c="dimmed" mt={3} truncate>{inc.top_cause || '—'}{inc.confidence > 0 ? ` (${Math.round(inc.confidence * 100)}%)` : ''}</Text>
-            <Text size="10px" c="dimmed" mt={2}>{inc.source} ・ {(inc.created_at || '').replace('T', ' ').slice(0, 16)}</Text>
-          </Box>
-        </Group>
-        <Stack gap={6} align="flex-end" style={{ flexShrink: 0 }}>
-          <Badge color={st.color} variant={inc.status === 'resolved' ? 'light' : 'filled'} radius="sm" size="sm">{st.label}</Badge>
-          <Badge color={u.color} variant="light" radius="sm" size="xs">{u.label}</Badge>
+    <Modal opened={!!inc} onClose={onClose} title="解決を記録" centered radius="md">
+      {inc && (
+        <Stack gap="sm">
+          <Text size="xs" c="dimmed">{inc.equipment_name} ・ {inc.symptom}{inc.error_code ? ` ・ ${inc.error_code}` : ''}</Text>
+          <TextInput label="実際の原因" value={cause} onChange={(e) => setCause(e.currentTarget.value)} />
+          <Group grow>
+            <NumberInput label="復旧時間(分)" value={rec} onChange={setRec} min={0} />
+            <TextInput label="メモ" value={note} onChange={(e) => setNote(e.currentTarget.value)} />
+          </Group>
+          <Button leftSection={<IconCheck size={15} />} loading={busy} onClick={submit} mt={4}>解決として登録（学習に反映）</Button>
         </Stack>
-      </Group>
-
-      {inc.status !== 'resolved' && (
-        <Group gap="xs" mt="sm" justify="flex-end">
-          {inc.status === 'awaiting_approval' && (
-            <Button size="xs" color="orange" leftSection={<IconShieldCheck size={14} />} loading={busy} onClick={approve}>承認して保全へ通知</Button>
-          )}
-          <Button size="xs" variant="default" leftSection={<IconClipboardPlus size={14} />} onClick={() => setOpen((o) => !o)}>解決を記録</Button>
-        </Group>
       )}
-      {open && (
-        <Paper bg="gray.0" p="sm" radius="md" mt="sm" withBorder>
-          <Stack gap="xs">
-            <TextInput size="xs" label="実際の原因" value={cause} onChange={(e) => setCause(e.currentTarget.value)} />
-            <Group grow>
-              <NumberInput size="xs" label="復旧時間(分)" value={rec} onChange={setRec} min={0} />
-              <TextInput size="xs" label="メモ" value={note} onChange={(e) => setNote(e.currentTarget.value)} />
-            </Group>
-            <Button size="xs" leftSection={<IconCheck size={14} />} loading={busy} onClick={resolve}>解決として登録（学習に反映）</Button>
-          </Stack>
-        </Paper>
-      )}
-      {inc.resolution && <Text size="xs" c="teal.7" mt="xs">解決: {inc.resolution.root_cause} ・ {inc.resolution.recovery_minutes}分</Text>}
-    </Card>
+    </Modal>
   )
 }
 
@@ -1404,9 +1551,9 @@ function EvalView() {
                       {d.top1 ? <IconCheck size={12} /> : d.top3 ? <IconAlertCircle size={12} /> : <IconX size={12} />}
                     </ThemeIcon>
                     <Badge size="xs" variant="default" radius="sm" style={{ flexShrink: 0 }}>{d.equipment_id}</Badge>
-                    <Text size="sm" c="gray.7" truncate>{d.predicted_top}</Text>
+                    <Text size="sm" c="gray.7" truncate miw={0}>{d.predicted_top}</Text>
                   </Group>
-                  <Text size="xs" c="dimmed" truncate visibleFrom="sm" style={{ flexShrink: 0, maxWidth: 160 }}>期待: {d.expected.join('/')}</Text>
+                  <Text size="xs" c="dimmed" truncate miw={0} visibleFrom="sm" style={{ flexShrink: 0, maxWidth: 160 }}>期待: {d.expected.join('/')}</Text>
                 </Group>
               ))}
             </Stack>
