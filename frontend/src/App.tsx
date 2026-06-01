@@ -1407,8 +1407,7 @@ function IncidentTable({ incidents, onChange }: { incidents: Incident[]; onChang
       <Table.Tr key={inc.id}>
         <Table.Td>
           <Badge size="sm" radius="sm" variant="light" color={u.color} style={{ whiteSpace: 'nowrap' }}
-            styles={{ label: { overflow: 'visible' } }}
-            leftSection={<Box c={`${u.color}.7`} style={{ display: 'flex' }}><IconPointFilled size={8} /></Box>}>{u.label}</Badge>
+            styles={{ label: { overflow: 'visible' } }}>{u.label}</Badge>
         </Table.Td>
         <Table.Td><Text size="sm" fw={600} c="gray.9" style={{ whiteSpace: 'nowrap' }}>{inc.equipment_name}</Text></Table.Td>
         <Table.Td>
@@ -1465,13 +1464,20 @@ function IncidentTable({ incidents, onChange }: { incidents: Incident[]; onChang
 }
 
 function ResolveModal({ inc, onClose, onDone }: { inc: Incident | null; onClose: () => void; onDone: () => void }) {
-  const [cause, setCause] = useState('')
+  // 中身は inc.id を key にして再マウント（選択ごとにフォーム状態を初期化。effect 内 setState を回避）
+  return (
+    <Modal opened={!!inc} onClose={onClose} title="解決を記録" centered radius="md">
+      {inc && <ResolveForm key={inc.id} inc={inc} onDone={onDone} />}
+    </Modal>
+  )
+}
+
+function ResolveForm({ inc, onDone }: { inc: Incident; onDone: () => void }) {
+  const [cause, setCause] = useState(inc.top_cause || '')
   const [rec, setRec] = useState<number | string>(20)
   const [note, setNote] = useState('')
   const [busy, setBusy] = useState(false)
-  useEffect(() => { if (inc) { setCause(inc.top_cause || ''); setRec(20); setNote('') } }, [inc])
   const submit = async () => {
-    if (!inc) return
     setBusy(true)
     try {
       const res = await fetch(`/api/incidents/${inc.id}/resolve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ root_cause: cause, recovery_minutes: Number(rec), note }) })
@@ -1482,19 +1488,15 @@ function ResolveModal({ inc, onClose, onDone }: { inc: Incident | null; onClose:
     } finally { setBusy(false) }
   }
   return (
-    <Modal opened={!!inc} onClose={onClose} title="解決を記録" centered radius="md">
-      {inc && (
-        <Stack gap="sm">
-          <Text size="xs" c="dimmed">{inc.equipment_name} ・ {inc.symptom}{inc.error_code ? ` ・ ${inc.error_code}` : ''}</Text>
-          <TextInput label="実際の原因" value={cause} onChange={(e) => setCause(e.currentTarget.value)} />
-          <Group grow>
-            <NumberInput label="復旧時間(分)" value={rec} onChange={setRec} min={0} />
-            <TextInput label="メモ" value={note} onChange={(e) => setNote(e.currentTarget.value)} />
-          </Group>
-          <Button leftSection={<IconCheck size={15} />} loading={busy} onClick={submit} mt={4}>解決として登録（学習に反映）</Button>
-        </Stack>
-      )}
-    </Modal>
+    <Stack gap="sm">
+      <Text size="xs" c="dimmed">{inc.equipment_name} ・ {inc.symptom}{inc.error_code ? ` ・ ${inc.error_code}` : ''}</Text>
+      <TextInput label="実際の原因" value={cause} onChange={(e) => setCause(e.currentTarget.value)} />
+      <Group grow>
+        <NumberInput label="復旧時間(分)" value={rec} onChange={setRec} min={0} />
+        <TextInput label="メモ" value={note} onChange={(e) => setNote(e.currentTarget.value)} />
+      </Group>
+      <Button leftSection={<IconCheck size={15} />} loading={busy} onClick={submit} mt={4}>解決として登録（学習に反映）</Button>
+    </Stack>
   )
 }
 
