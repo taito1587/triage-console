@@ -6,3 +6,4 @@ venv/
 .streamlit/secrets.toml
 data/feedback.json
 .azure/
+data/embeddings_cache.json

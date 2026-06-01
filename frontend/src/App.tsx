@@ -156,6 +156,10 @@ const relTime = (ts: number) => {
   if (s < 86400) return `${Math.floor(s / 3600)}時間前`
   return `${Math.floor(s / 86400)}日前`
 }
+// 履歴ID/タイムスタンプ（描画外の純粋ヘルパー：レンダー中の Date.now 直呼びを避ける）
+const nowMs = () => Date.now()
+const histId = () =>
+  (typeof crypto !== 'undefined' && crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}_${Math.floor(Math.random() * 1e6)}`)
 
 // デモ用プリセット（クリックで入力欄を一括投入）
 const SCENARIOS = [
@@ -188,6 +192,11 @@ export default function App() {
 
   useEffect(() => { fetch('/api/meta').then((r) => r.json()).then(setMeta).catch(() => {}) }, [])
 
+  const eName = meta?.equipments.find((x) => x.id === eq)?.name ?? eq
+  const intake: Intake = { equipment_id: eq, equipment_name: eName, process: proc, error_code: err, symptom, free_text: free, use_feedback: useFeedback }
+
+  const clearImage = () => { setImgFile(null); setImgPreview(null) }
+
   const runTriage = async () => {
     setLoading(true); setResult(null); setError(null)
     const ctrl = new AbortController()
@@ -202,7 +211,7 @@ export default function App() {
       const data: Triage = await res.json()
       setResult(data)
       const item: HistItem = {
-        id: `${Date.now()}`, ts: Date.now(), equipment_name: eName,
+        id: histId(), ts: nowMs(), equipment_name: eName,
         urgency: data.urgency?.level ?? '-', top_cause: data.root_causes?.[0]?.cause ?? '',
         result: data, intake,
       }
@@ -214,13 +223,12 @@ export default function App() {
     } finally { clearTimeout(timer); setLoading(false) }
   }
 
-  const eName = meta?.equipments.find((x) => x.id === eq)?.name ?? eq
-  const intake: Intake = { equipment_id: eq, equipment_name: eName, process: proc, error_code: err, symptom, free_text: free, use_feedback: useFeedback }
   const recordFromResult = (cause: string) => { setFbSeed({ eq, err, symptom, cause }); setActive('feedback') }
   const goHome = () => { setActive('triage'); setResult(null); setError(null); closeNav() }
   const restore = (h: HistItem) => {
     setEq(h.intake.equipment_id); setProc(h.intake.process); setErr(h.intake.error_code)
     setSymptom(h.intake.symptom); setFree(h.intake.free_text); setUseFeedback(h.intake.use_feedback)
+    clearImage() // 履歴は画像を保持しないため、現在の画像を残さない
     setResult(h.result); setError(null); setActive('triage'); closeNav()
   }
 
@@ -234,8 +242,8 @@ export default function App() {
         <Stack gap={0} h="100%">
           {/* ロゴ：最上部・クリックでホーム・hover演出なし */}
           <UnstyledButton onClick={goHome} aria-label="ホームに戻る"
-            style={{ display: 'block', padding: '18px 18px 14px' }}>
-            <img src="/logo.png" alt="Triage Console" style={{ height: 34, width: 'auto', display: 'block', pointerEvents: 'none' }} />
+            style={{ display: 'block', padding: '20px 18px 16px' }}>
+            <img src="/logo.png" alt="Triage Console" style={{ height: 46, width: 'auto', maxWidth: '100%', display: 'block', pointerEvents: 'none' }} />
           </UnstyledButton>
           <Divider />
 
@@ -1210,7 +1218,11 @@ function IncidentBoard() {
   useEffect(() => { load() }, [])
   const ingest = async () => {
     setBusy(true)
-    try { await fetch('/api/incidents/ingest_sample', { method: 'POST' }); await load() }
+    try {
+      const res = await fetch('/api/incidents/ingest_sample', { method: 'POST' })
+      if (!res.ok) throw new Error()
+      await load()
+    }
     catch { notifications.show({ color: 'red', title: 'インシデント', message: '取り込みに失敗しました' }) }
     finally { setBusy(false) }
   }
@@ -1276,15 +1288,21 @@ function IncidentCard({ inc, onChange }: { inc: Incident; onChange: () => void }
   const approve = async () => {
     setBusy(true)
     try {
-      await fetch(`/api/incidents/${inc.id}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      const res = await fetch(`/api/incidents/${inc.id}/approve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      if (!res.ok) throw new Error()
       notifications.show({ color: 'teal', icon: <IconCheck size={16} />, title: '承認しました', message: '保全へ通知し、対応中に移行しました' }); onChange()
+    } catch {
+      notifications.show({ color: 'red', title: '承認に失敗しました', message: '時間をおいて再度お試しください' })
     } finally { setBusy(false) }
   }
   const resolve = async () => {
     setBusy(true)
     try {
-      await fetch(`/api/incidents/${inc.id}/resolve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ root_cause: cause, recovery_minutes: Number(rec), note }) })
+      const res = await fetch(`/api/incidents/${inc.id}/resolve`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ root_cause: cause, recovery_minutes: Number(rec), note }) })
+      if (!res.ok) throw new Error()
       notifications.show({ color: 'teal', icon: <IconCheck size={16} />, title: '解決を記録', message: '現場確定事例として学習に還流しました' }); setOpen(false); onChange()
+    } catch {
+      notifications.show({ color: 'red', title: '登録に失敗しました', message: '時間をおいて再度お試しください' })
     } finally { setBusy(false) }
   }
   return (

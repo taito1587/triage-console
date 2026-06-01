@@ -30,11 +30,14 @@ def load_set():
 
 
 def _hit(causes, expected):
-    """root_causes のリストから、各順位が expected キーワードのいずれかを含むか。"""
+    """各順位の「原因(cause)」が expected キーワードのいずれかに一致するか。
+    根拠文(evidence)は判定に使わない(根拠でかすめただけの“水増し正解”を防ぐ)。
+    予測原因と期待語の双方向部分一致で、表記の粒度差(より具体/一般)を許容する。"""
+    exp = [k.lower() for k in expected if k]
     flags = []
     for c in causes:
-        text = (c.get("cause", "") + " " + c.get("evidence", "")).lower()
-        flags.append(any(k.lower() in text for k in expected))
+        cause = (c.get("cause", "") if isinstance(c, dict) else str(c)).lower()
+        flags.append(bool(cause) and any(k in cause or cause in k for k in exp))
     return flags
 
 

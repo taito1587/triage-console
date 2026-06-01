@@ -37,13 +37,21 @@ def get_kpi():
 
 @router.post("/ingest_sample")
 def ingest_sample():
-    created = inc.ingest_sample()
+    try:
+        created = inc.ingest_sample()
+    except RuntimeError:
+        raise HTTPException(503, "Azure OpenAI が未設定のため取り込めません")
+    except FileNotFoundError:
+        raise HTTPException(500, "サンプルアラームが見つかりません")
     return {"ingested": len(created), "kpi": inc.kpi()}
 
 
 @router.post("/ingest")
 def ingest(req: IngestReq):
-    created = inc.ingest(req.events)
+    try:
+        created = inc.ingest(req.events)
+    except RuntimeError:
+        raise HTTPException(503, "Azure OpenAI が未設定のため取り込めません")
     return {"ingested": len(created), "kpi": inc.kpi()}
 
 
@@ -53,6 +61,8 @@ def approve(incident_id: str, req: ApproveReq):
         return inc.approve(incident_id, req.approver)
     except KeyError:
         raise HTTPException(404, "incident not found")
+    except inc.InvalidState as e:
+        raise HTTPException(409, str(e))
 
 
 @router.post("/{incident_id}/resolve")
@@ -62,6 +72,8 @@ def resolve(incident_id: str, req: ResolveReq):
                            req.note, req.ai_was_correct, req.by)
     except KeyError:
         raise HTTPException(404, "incident not found")
+    except inc.InvalidState as e:
+        raise HTTPException(409, str(e))
 
 
 @router.post("/clear")

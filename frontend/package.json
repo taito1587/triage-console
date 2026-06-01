@@ -10,13 +10,15 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@mantine/charts": "^9.2.2",
     "@mantine/core": "^9.2.2",
     "@mantine/dropzone": "^9.2.2",
     "@mantine/hooks": "^9.2.2",
     "@mantine/notifications": "^9.2.2",
     "@tabler/icons-react": "^3.44.0",
     "react": "^19.2.6",
-    "react-dom": "^19.2.6"
+    "react-dom": "^19.2.6",
+    "recharts": "^3.8.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

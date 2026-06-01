@@ -298,6 +298,13 @@ def run_triage(client, intake, results, image_b64=None):
             "urgency": {"level": "Medium", "reason": "出力の解析に失敗しました(要手動確認)"},
             "root_causes": [], "first_checks": [], "similar_cases": [],
             "recommended_actions": [], "escalation": {"should_notify": False}, "image_findings": None}
+    # confidence を 0..1 の float に正規化(モデルが文字列/Null を返してもクラッシュしない)
+    for c in (out.get("root_causes") or []):
+        if isinstance(c, dict):
+            try:
+                c["confidence"] = max(0.0, min(1.0, float(c.get("confidence", 0))))
+            except (TypeError, ValueError):
+                c["confidence"] = 0.0
     # 根拠(citations)を付加
     out["citations"] = [
         {"source_type": kind, "label": LABEL[kind], "doc_id": d.get("doc_id", "-"),
@@ -429,11 +436,12 @@ def orchestrate_local(client, intake, image_b64=None, use_feedback=True):
 
     # 3. Triage
     triage = run_triage(client, intake, results, image_b64)
-    rc = triage.get("root_causes", [{}])
+    rc = triage.get("root_causes") or []
+    rc0 = rc[0] if rc and isinstance(rc[0], dict) else {}
     trace.append({"agent": "Triage", "title": "緊急度・原因を判断",
                   "detail": f"緊急度={triage.get('urgency',{}).get('level','-')} / "
-                            f"第一候補={rc[0].get('cause','-') if rc else '-'} "
-                            f"({int(rc[0].get('confidence',0)*100) if rc else 0}%)"})
+                            f"第一候補={rc0.get('cause','-')} "
+                            f"({int(float(rc0.get('confidence', 0) or 0) * 100)}%)"})
 
     # 4. Action (function calling — AIが自律的にツール実行)
     actions = decide_and_act(client, intake, triage)
