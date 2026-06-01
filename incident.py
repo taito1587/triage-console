@@ -11,8 +11,35 @@ import os
 import json
 import datetime
 from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor
+
+from openai import AzureOpenAI
 
 import triage_core as core
+
+INGEST_WORKERS = int(os.getenv("INGEST_WORKERS", "8"))
+
+
+def _bounded_client():
+    """タイムアウト/リトライ上限つきの AOAI クライアント(1件のstallで全体が固まるのを防ぐ)。"""
+    return AzureOpenAI(azure_endpoint=core.AOAI_ENDPOINT, api_key=core.AOAI_KEY,
+                       api_version=core.AOAI_API_VERSION, timeout=40.0, max_retries=1)
+
+
+def _query_of(intake):
+    """retrieve と同じクエリ文字列(埋め込み事前ウォーム用)。"""
+    return (f"設備:{intake['equipment_id']} エラーコード:{intake.get('error_code','')} "
+            f"症状:{intake.get('symptom','')} {intake.get('free_text','')}").strip()
+
+
+def _warm_embeddings(corpus, feedback, intakes):
+    """並列トリアージ前に埋め込みを単一スレッドで事前計算しキャッシュ競合を避ける。"""
+    try:
+        pools = core._pools(corpus, feedback)
+        corpus_texts = [(d.get("text") or " ") for docs in pools.values() for d in docs]
+        core.embed_texts(corpus_texts + [_query_of(i) for i in intakes])
+    except Exception:  # noqa  retrieve 側がフォールバックするので致命でない
+        pass
 
 ROOT = Path(__file__).parent
 SAMPLE_EVENTS = ROOT / "data" / "sample_events.json"
@@ -78,6 +105,8 @@ def _all():
 
 
 def _get(incident_id):
+    # 小規模のため全件から検索(Cosmosは read_all_items、PK不要)。件数増時は
+    # equipment_id を引数に取り read_item(id, partition_key) 化するのが本筋。
     for x in _all():
         if x.get("id") == incident_id:
             return x
@@ -89,36 +118,56 @@ TRIAGE_FIELDS = ["urgency", "root_causes", "first_checks", "recommended_actions"
                  "escalation", "image_findings", "citations"]
 
 
+def _build_intake(ev, equip):
+    eqid = ev.get("equipment_id", "")
+    spec = equip.get(eqid, {})
+    return {
+        "equipment_id": eqid,
+        "equipment_name": spec.get("equipment_name", eqid),
+        "process": spec.get("process", ""),
+        "error_code": ev.get("error_code", ""),
+        "symptom": ev.get("symptom", "その他"),
+        "free_text": ev.get("free_text", ""),
+    }
+
+
 def ingest(events):
-    """イベント列を自動トリアージしてインシデント化(High は承認待ち)。"""
-    client = core.get_client()
-    if client is None:
+    """イベント列を自動トリアージしてインシデント化(High は承認待ち)。
+    埋め込みを事前ウォームしてから run_triage を並列実行する(キャッシュ競合を回避)。"""
+    if core.get_client() is None:
         raise RuntimeError("AOAI未設定")
+    client = _bounded_client()
     corpus = core.load_corpus()
     feedback = core.load_feedback()
     equip = {e["equipment_id"]: e for e in corpus["equipment_specs"]}
-    created = []
-    for ev in events:
-        eqid = ev.get("equipment_id", "")
-        spec = equip.get(eqid, {})
-        intake = {
-            "equipment_id": eqid,
-            "equipment_name": spec.get("equipment_name", eqid),
-            "process": spec.get("process", ""),
-            "error_code": ev.get("error_code", ""),
-            "symptom": ev.get("symptom", "その他"),
-            "free_text": ev.get("free_text", ""),
-        }
+    intakes = [_build_intake(ev, equip) for ev in events]
+    _warm_embeddings(corpus, feedback, intakes)
+
+    def _triage(pair):
+        ev, intake = pair
         # トリアージのみ(自動アクションはしない=S3の承認を待つ)
-        results = core.retrieve(corpus, feedback, eqid, intake["error_code"],
-                                intake["free_text"], intake["symptom"])
-        tri = core.run_triage(client, intake, results, None)
+        try:
+            results = core.retrieve(corpus, feedback, intake["equipment_id"], intake["error_code"],
+                                    intake["free_text"], intake["symptom"])
+            tri = core.run_triage(client, intake, results, None)
+        except Exception as e:  # noqa  1件失敗でもボードは埋める(縮退)
+            tri = {"urgency": {"level": "Medium", "reason": f"自動診断に失敗(要手動確認): {str(e)[:80]}"},
+                   "root_causes": [], "first_checks": [], "similar_cases": [],
+                   "recommended_actions": [], "escalation": {"should_notify": False},
+                   "image_findings": None, "citations": []}
+        return ev, intake, tri
+
+    with ThreadPoolExecutor(max_workers=INGEST_WORKERS) as ex:
+        triaged = list(ex.map(_triage, zip(events, intakes)))
+
+    created = []
+    for ev, intake, tri in triaged:
         urg = tri.get("urgency", {}).get("level", "Medium")
         rc = (tri.get("root_causes") or [{}])[0]
         needs_approval = urg == "High" and tri.get("escalation", {}).get("should_notify")
         inc = {
-            "id": ev.get("id") or f"inc-{eqid}-{ev.get('ts','')}",
-            "equipment_id": eqid,
+            "id": ev.get("id") or f"inc-{intake['equipment_id']}-{ev.get('ts','')}",
+            "equipment_id": intake["equipment_id"],
             "equipment_name": intake["equipment_name"],
             "error_code": intake["error_code"],
             "symptom": intake["symptom"],
