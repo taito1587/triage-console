@@ -1,41 +1,49 @@
 #!/usr/bin/env bash
-# Manufacturing Triage Agent — Azure App Service デプロイ
-# 前提: az login 済み / .env に AOAI 設定済み
+# 本番デプロイ(ワンコマンド): フロントをビルド → zip化 → Azure App Service へ配信。
+# 前提: az login 済み / .env に AOAI 設定済み。
+# 環境変数で上書き可: RG / APP / LOC / SKU
 set -euo pipefail
-
-# .env を読み込み(環境変数化)
-set -a; source .env; set +a
+cd "$(dirname "$0")"
 
 RG=${RG:-rg-mfg-triage}
+APP=${APP:-mfg-triage-30074}
 LOC=${LOC:-japaneast}
-APP=${APP:-mfg-triage-$RANDOM}
 SKU=${SKU:-B1}
 
-echo "==> Resource group: $RG ($LOC) / App: $APP / SKU: $SKU"
+echo "==> Target: $APP ($RG / $LOC)"
 
-az group create -n "$RG" -l "$LOC" -o none
+# 1. フロントをビルド
+echo "==> build frontend"
+(cd frontend && npm install --no-audit --no-fund >/dev/null 2>&1 && npm run build)
 
-# ソースからビルド&デプロイ(App Service Linux / Python)
-az webapp up --name "$APP" -g "$RG" --runtime "PYTHON:3.12" --sku "$SKU" --location "$LOC" -o none
+# 2. App Service が無ければ作成
+if ! az webapp show -g "$RG" -n "$APP" >/dev/null 2>&1; then
+  echo "==> create App Service ($SKU)"
+  az group create -n "$RG" -l "$LOC" -o none
+  az webapp up --name "$APP" -g "$RG" --runtime "PYTHON:3.12" --sku "$SKU" --location "$LOC" -o none || true
+fi
 
-# Streamlit 起動コマンド (App Service は 8000 を期待)
+# 3. 起動コマンド + アプリ設定(AOAI)
+echo "==> configure"
 az webapp config set -g "$RG" -n "$APP" \
-  --startup-file "python -m streamlit run app.py --server.port 8000 --server.address 0.0.0.0 --server.enableCORS false --server.enableXsrfProtection false --browser.gatherUsageStats false" \
-  -o none
+  --startup-file "python -m uvicorn server:app --host 0.0.0.0 --port 8000" -o none
+if [ -f .env ]; then
+  set -a; source .env; set +a
+  az webapp config appsettings set -g "$RG" -n "$APP" --settings \
+    SCM_DO_BUILD_DURING_DEPLOYMENT=true WEBSITES_PORT=8000 \
+    AZURE_OPENAI_ENDPOINT="$AZURE_OPENAI_ENDPOINT" \
+    AZURE_OPENAI_API_KEY="$AZURE_OPENAI_API_KEY" \
+    AZURE_OPENAI_DEPLOYMENT="${AZURE_OPENAI_DEPLOYMENT:-gpt-4o}" \
+    AZURE_OPENAI_API_VERSION="${AZURE_OPENAI_API_VERSION:-2024-10-21}" \
+    TEAMS_WEBHOOK_URL="${TEAMS_WEBHOOK_URL:-}" -o none
+fi
 
-# アプリ設定 (ビルド有効化 + ポート + AOAI)
-az webapp config appsettings set -g "$RG" -n "$APP" --settings \
-  SCM_DO_BUILD_DURING_DEPLOYMENT=true \
-  WEBSITES_PORT=8000 \
-  AZURE_OPENAI_ENDPOINT="$AZURE_OPENAI_ENDPOINT" \
-  AZURE_OPENAI_API_KEY="$AZURE_OPENAI_API_KEY" \
-  AZURE_OPENAI_DEPLOYMENT="$AZURE_OPENAI_DEPLOYMENT" \
-  AZURE_OPENAI_API_VERSION="$AZURE_OPENAI_API_VERSION" \
-  TEAMS_WEBHOOK_URL="${TEAMS_WEBHOOK_URL:-}" \
-  -o none
-
+# 4. zip化 (node_modules/.venv/.git 除外) してデプロイ
+echo "==> zip & deploy"
+rm -f /tmp/mfg-deploy.zip
+zip -rq /tmp/mfg-deploy.zip server.py triage_core.py app.py requirements.txt data/corpus.json frontend/dist
+az webapp deploy -g "$RG" -n "$APP" --src-path /tmp/mfg-deploy.zip --type zip
 az webapp restart -g "$RG" -n "$APP" -o none
 
 echo ""
-echo "==> Deployed. URL: https://$APP.azurewebsites.net"
-echo "    (初回はコンテナ起動に1-2分かかることがあります)"
+echo "==> Deployed: https://$APP.azurewebsites.net"
