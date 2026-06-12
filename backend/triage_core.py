@@ -1,5 +1,4 @@
-"""Manufacturing Triage Agent — コアロジック (UIフレームワーク非依存)。
-Streamlit版(app.py)とFastAPI版(server.py)で共有する。"""
+"""Manufacturing Triage Agent — コアロジック (UIフレームワーク非依存)。"""
 import os
 import json
 import base64
@@ -27,7 +26,7 @@ try:
 except Exception:  # noqa
     pass
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).parent.parent
 CORPUS_PATH = ROOT / "data" / "corpus.json"
 FEEDBACK_PATH = ROOT / "data" / "feedback.json"
 
@@ -370,9 +369,10 @@ ACTION_TOOLS = [
 def _exec_tool(name, args, intake, urgency):
     """ツールの実体。Action AgentのツールコールをサーバÅで実行する。"""
     if name == "escalate_to_maintenance":
-        sent, text = notify_teams(args.get("message", ""), intake, urgency)
-        return {"tool": name, "args": args, "result": ("Teams送信" if sent else "(デモ)通知シミュレート"),
-                "detail": text, "executed": True}
+        sent, _text = notify_teams(args.get("message", ""), intake, urgency)
+        # detail は UI 表示用に通知本文のみ(生の🚨ヘッダ/重複情報は webhook 側にのみ残す)
+        return {"tool": name, "args": args, "result": ("Teams送信" if sent else "通知をシミュレート"),
+                "detail": args.get("message", ""), "to": args.get("to", "保全当番"), "executed": True}
     if name == "isolate_lot":
         import datetime
         ticket = f"ISO-{intake.get('equipment_id','LOT')}"
@@ -416,7 +416,7 @@ def orchestrate(client, intake, image_b64=None, use_feedback=True):
     engine = os.getenv("TRIAGE_ENGINE", "local").lower()
     if engine == "foundry":
         try:
-            import foundry_engine
+            from . import foundry_engine
             if foundry_engine.available():
                 return foundry_engine.orchestrate_foundry(intake, image_b64, use_feedback)
         except Exception as e:  # noqa
@@ -476,17 +476,39 @@ def orchestrate_local(client, intake, image_b64=None, use_feedback=True):
     return triage
 
 
-def followup(client, intake, question, use_feedback=True):
-    """トリアージ後のフォローアップ質問に、資料を根拠に回答する。"""
+_FOLLOWUP_SYS = ("渡された資料だけを根拠に、現場担当の質問へ簡潔に答える。推測で断定しない。"
+                 "回答は読みやすい Markdown で書く(手順は番号付きリスト、要点は箇条書き、"
+                 "重要語は **太字**。見出しの##や表は使わない)。")
+
+
+def _followup_messages(intake, question, use_feedback=True):
     corpus = load_corpus()
     feedback = load_feedback() if use_feedback else []
     results = retrieve(corpus, feedback, intake.get("equipment_id", ""), intake.get("error_code", ""),
                        f"{intake.get('free_text','')} {question}", intake.get("symptom", ""))
     context = build_context(results)
+    return [
+        {"role": "system", "content": _FOLLOWUP_SYS},
+        {"role": "user", "content": f"対象設備:{intake.get('equipment_name','')}\n資料:\n{context}\n\n質問:{question}"},
+    ]
+
+
+def followup(client, intake, question, use_feedback=True):
+    """トリアージ後のフォローアップ質問に、資料を根拠に回答する(非ストリーム)。"""
     resp = client.chat.completions.create(
-        model=AOAI_DEPLOYMENT,
-        messages=[
-            {"role": "system", "content": "渡された資料だけを根拠に、現場担当の質問へ簡潔に答える。推測で断定しない。"},
-            {"role": "user", "content": f"対象設備:{intake.get('equipment_name','')}\n資料:\n{context}\n\n質問:{question}"},
-        ], temperature=0.2, max_tokens=600)
+        model=AOAI_DEPLOYMENT, messages=_followup_messages(intake, question, use_feedback),
+        temperature=0.2, max_tokens=600)
     return resp.choices[0].message.content
+
+
+def followup_stream(client, intake, question, use_feedback=True):
+    """フォローアップ回答を逐次(delta)で yield するジェネレータ。"""
+    stream = client.chat.completions.create(
+        model=AOAI_DEPLOYMENT, messages=_followup_messages(intake, question, use_feedback),
+        temperature=0.2, max_tokens=600, stream=True)
+    for chunk in stream:
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta
+        if delta and delta.content:
+            yield delta.content

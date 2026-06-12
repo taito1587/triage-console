@@ -19,14 +19,14 @@ if [ ! -d frontend/node_modules ]; then (cd frontend && npm install); fi
 
 # --- 既存プロセスの掃除 (前回の uvicorn --reload の残り子プロセス対策) ---
 lsof -ti:8000 2>/dev/null | xargs kill -9 2>/dev/null || true
-pkill -f "uvicorn server:app" 2>/dev/null || true
+pkill -f "uvicorn backend.server:app" 2>/dev/null || true
 
 # --- 起動 ---
 echo "▶ FastAPI  : http://localhost:8000  (API)"
 echo "▶ Frontend : http://localhost:5173  (ここを開く)"
-python -m uvicorn server:app --reload --port 8000 &
+python -m uvicorn backend.server:app --reload --port 8000 &
 API_PID=$!
 # 終了時は uvicorn 本体と --reload の子プロセスまで確実に停止
-cleanup() { pkill -P "$API_PID" 2>/dev/null || true; kill "$API_PID" 2>/dev/null || true; pkill -f "uvicorn server:app" 2>/dev/null || true; }
+cleanup() { pkill -P "$API_PID" 2>/dev/null || true; kill "$API_PID" 2>/dev/null || true; pkill -f "uvicorn backend.server:app" 2>/dev/null || true; }
 trap cleanup EXIT INT TERM
 cd frontend && npm run dev

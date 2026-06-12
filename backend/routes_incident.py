@@ -1,10 +1,8 @@
-"""自律インシデント・ボードの API ルーター (R1/S1/S3)。
-server.py に `from routes_incident import router as incident_router; app.include_router(incident_router)`
-を1行追加するだけで有効化される（server.py 本体は変更不要）。"""
+"""自律インシデント・ボードの API ルーター (R1/S1/S3)。"""
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-import incident as inc
+from . import incident as inc
 
 router = APIRouter(prefix="/api/incidents", tags=["incidents"])
 

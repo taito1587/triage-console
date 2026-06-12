@@ -9,14 +9,14 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-import triage_core as core
-from routes_incident import router as incident_router
-from routes_eval import router as eval_router
+from . import triage_core as core
+from .routes_incident import router as incident_router
+from .routes_eval import router as eval_router
 
 app = FastAPI(title="Manufacturing Triage Agent")
 app.include_router(incident_router)
 app.include_router(eval_router)
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).parent.parent
 DIST = ROOT / "frontend" / "dist"
 
 
@@ -100,6 +100,25 @@ def followup(req: FollowupReq):
     except Exception as e:  # noqa
         raise HTTPException(500, f"回答失敗: {e}")
     return {"answer": ans}
+
+
+@app.post("/api/followup/stream")
+def followup_stream(req: FollowupReq):
+    from fastapi.responses import StreamingResponse
+    client = core.get_client()
+    if client is None:
+        raise HTTPException(503, "Azure OpenAI が未設定です")
+    intake_d = req.model_dump()
+
+    def gen():
+        try:
+            for delta in core.followup_stream(client, intake_d, req.question, req.use_feedback):
+                yield delta
+        except Exception:  # noqa  ストリーム途中の失敗はメッセージで通知
+            yield "\n（回答の生成中にエラーが発生しました）"
+
+    return StreamingResponse(gen(), media_type="text/plain; charset=utf-8",
+                             headers={"X-Accel-Buffering": "no", "Cache-Control": "no-cache"})
 
 
 @app.post("/api/feedback")

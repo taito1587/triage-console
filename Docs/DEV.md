@@ -4,10 +4,14 @@
 
 ```
 frontend/        React + TypeScript + Mantine (Vite)   … UI
-server.py        FastAPI                                … /api/* + dist配信
-triage_core.py   トリアージのコアロジック(AOAI呼び出し)   … server/app 共有
+backend/         FastAPI アプリ                          … /api/* + dist配信
+  server.py        … エントリ (uvicorn backend.server:app)
+  triage_core.py   … トリアージのコアロジック(AOAI呼び出し)
+  foundry_engine.py… Azure AI Foundry connected agents
+  incident.py      … 自律インシデント・ボード
+  evaluation.py    … 品質評価 (Top1/Top3 / groundedness)
+  routes_*.py      … APIルーター
 data/corpus.json デモコーパス(設備/手順/トラブル/品質)
-app.py           Streamlit版(予備)
 ```
 
 開発時は **Vite(:5173)** と **FastAPI(:8000)** を別プロセスで動かし、
@@ -36,13 +40,13 @@ make dev
 - Ctrl+C で両方停止
 
 > フロントだけ・APIだけ動かしたい場合:
-> `cd frontend && npm run dev` / `python -m uvicorn server:app --reload --port 8000`
+> `cd frontend && npm run dev` / `python -m uvicorn backend.server:app --reload --port 8000`
 
 ## 本番ビルドをローカル確認
 
 ```bash
 make build                                   # frontend/dist 生成
-python -m uvicorn server:app --port 8000     # http://localhost:8000 で本番同等
+python -m uvicorn backend.server:app --port 8000     # http://localhost:8000 で本番同等
 ```
 
 ## デプロイ

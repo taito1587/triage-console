@@ -1,8 +1,7 @@
-"""評価(S2)の API ルーター。
-server.py に `from routes_eval import router as eval_router; app.include_router(eval_router)` を1行追加で有効化。"""
+"""評価(S2)の API ルーター。"""
 from fastapi import APIRouter, HTTPException
 
-import evaluation
+from . import evaluation
 
 router = APIRouter(prefix="/api/eval", tags=["eval"])
 

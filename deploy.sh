@@ -26,7 +26,7 @@ fi
 # 3. 起動コマンド + アプリ設定(AOAI)
 echo "==> configure"
 az webapp config set -g "$RG" -n "$APP" \
-  --startup-file "python -m uvicorn server:app --host 0.0.0.0 --port 8000" -o none
+  --startup-file "python -m uvicorn backend.server:app --host 0.0.0.0 --port 8000" -o none
 if [ -f .env ]; then
   set -a; source .env; set +a
   az webapp config appsettings set -g "$RG" -n "$APP" --settings \
@@ -42,11 +42,11 @@ fi
 echo "==> zip & deploy"
 rm -f /tmp/mfg-deploy.zip
 zip -rq /tmp/mfg-deploy.zip \
-  server.py triage_core.py incident.py routes_incident.py \
-  evaluation.py routes_eval.py foundry_engine.py app.py \
+  backend \
   requirements.txt \
   data/corpus.json data/sample_events.json data/eval_set.json \
-  frontend/dist
+  frontend/dist \
+  -x "backend/__pycache__/*"
 az webapp deploy -g "$RG" -n "$APP" --src-path /tmp/mfg-deploy.zip --type zip
 az webapp restart -g "$RG" -n "$APP" -o none
 

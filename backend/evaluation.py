@@ -3,7 +3,6 @@
 ラベル付きテストセット(data/eval_set.json)に対してトリアージを実行し、
 Top1/Top3 正答率と groundedness(根拠提示率) を計測する。
 現場知見(フィードバック)の ON/OFF で比較でき、"使うほど賢くなる"を定量化する。
-新規ファイルのみ（共有ファイルは編集しない）。triage_core を再利用。
 """
 import os
 import json
@@ -12,9 +11,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 from openai import AzureOpenAI
 
-import triage_core as core
+from . import triage_core as core
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).parent.parent
 EVAL_SET = ROOT / "data" / "eval_set.json"
 EVAL_WORKERS = int(os.getenv("EVAL_WORKERS", "4"))
 

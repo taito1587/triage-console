@@ -8,7 +8,7 @@ import os
 import json
 import re
 
-import triage_core as core
+from . import triage_core as core
 
 FOUNDRY_ENDPOINT = os.getenv("FOUNDRY_PROJECT_ENDPOINT", "")
 FOUNDRY_MODEL = os.getenv("FOUNDRY_MODEL", "gpt-4o")

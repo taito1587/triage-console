@@ -4,8 +4,7 @@
 インシデント・ボードに積む。High は人間承認待ちにし、承認で初めて保全へ通知(実行)。
 復旧フィードバックでクローズし、学習(現場確定事例)へ還流する。
 
-triage_core の検索・トリアージ・通知・フィードバック保存を再利用する。
-新規ファイルのみ（共有ファイルは編集しない）。Cosmos の `incidents` コンテナを使用。
+triage_core の検索・トリアージ・通知・フィードバック保存を再利用する。Cosmos の `incidents` コンテナを使用。
 """
 import os
 import json
@@ -16,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from openai import AzureOpenAI
 
-import triage_core as core
+from . import triage_core as core
 
 INGEST_WORKERS = int(os.getenv("INGEST_WORKERS", "8"))
 
@@ -46,7 +45,7 @@ def _warm_embeddings(corpus, feedback, intakes):
     except Exception:  # noqa  retrieve 側がフォールバックするので致命でない
         pass
 
-ROOT = Path(__file__).parent
+ROOT = Path(__file__).parent.parent
 SAMPLE_EVENTS = ROOT / "data" / "sample_events.json"
 
 _inc_container = None
