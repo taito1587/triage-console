@@ -258,21 +258,37 @@ def build_context(results):
 TRIAGE_SCHEMA_HINT = """
 必ず次のJSONスキーマで返答してください(日本語):
 {
-  "urgency": {"level": "High|Medium|Low", "reason": "判断理由"},
-  "root_causes": [{"rank":1,"cause":"...","evidence":"参照根拠","confidence":0.0}],
+  "urgency": {"level": "Critical|High|Medium|Low", "reason": "判断理由"},
+  "root_causes": [{"rank":1,"cause":"...","evidence":"参照根拠","supporting_doc_ids":["doc-id1","doc-id2"],"confidence":0.0}],
   "first_checks": [{"order":1,"action":"..."}],
+  "parallel_checks_while_waiting": ["保全到着までにオペレーターができる安全な並行作業(該当ロット退避/温度ログ取得/追加写真撮影など)"],
+  "recommended_tools": ["保全が持参すべき工具・部品(例: 13mmレンチ, 予備ローラー, トルクレンチ)"],
   "similar_cases": [{"title":"...","date":"YYYY-MM-DD","cause":"...","recovery_minutes":0,"note":"..."}],
   "recommended_actions": ["..."],
   "escalation": {"should_notify": true, "to": "保全/品質保証/リーダー", "message": "通知文(1-2行)"},
   "image_findings": "画像所見(なければnull)"
 }
-root_causesは最大3件・確信度の高い順。first_checksは現場が最初にやる順。
+
+緊急度の定義(厳密に):
+- Critical: 火災/煙/人身リスク/ライン全停止級。**人の承認を待たず保全へ即時通知すべきレベル**
+- High:     品質影響大/単一設備停止。承認後に保全通知
+- Medium:   軽微な不調/予兆。承認 + オペレーター並行作業を推奨
+- Low:      誤検知レベル/オペレーター自己解決可能。保全通知は不要、案内のみ
+
+root_causesは最大3件・確信度の高い順。supporting_doc_ids は渡された資料の id= と完全一致させること。
+資料に存在しない id を作ってはならない。
+first_checksは現場が最初にやる順。parallel_checks_while_waiting は安全に並行できるものだけ。
+recommended_tools は推定原因に基づき保全が持参すべきものを列挙(無ければ空配列)。
 similar_casesは渡された過去トラブル/フィードバックから関連するものを抽出。"""
 
 SYSTEM_PROMPT = """あなたは製造現場のトリアージ支援エージェントです。
 渡された「設備仕様・作業手順書・過去トラブル・品質記録・現場フィードバック」だけを根拠に判断し、
 推測で断定しないこと。根拠は必ず渡された資料に紐づけること。
-緊急度はライン停止/品質影響/安全リスクの観点で判断する。
+このプロダクトの本質は「正しい人(保全)に、正しい情報(過去事例+推奨工具+並行作業)を、正しい順番で渡す」こと。
+オペレーターが直接ライン修理することは想定していない。あなたの仕事は:
+1. 緊急度の正確な仕分け(Critical/High/Medium/Low の定義に従う)
+2. 保全が現場到着後に診断時間を最小化するための情報パッケージ作成
+3. 保全到着までにオペレーターが並行で安全にできる準備作業の提示
 出力は指定JSONのみ(前後に余計な文章を付けない)。"""
 
 
@@ -325,12 +341,103 @@ def run_triage(client, intake, results, image_b64=None):
          "text": d.get("text", ""), "is_feedback": d.get("source") == "feedback"}
         for kind, docs in results.items() for d in docs
     ]
+    # supporting_doc_ids バリデーション: 渡した id 集合に存在しないものは捏造なので除去
+    valid_ids = {c["doc_id"] for c in out["citations"]}
+    for rc in (out.get("root_causes") or []):
+        if isinstance(rc, dict):
+            ids = rc.get("supporting_doc_ids") or []
+            rc["supporting_doc_ids"] = [i for i in ids if i in valid_ids]
+    # similar_cases を LLM 生成ではなく retrieve 実データ(past_trouble)から構築(corpus非整合の幻覚を消す)
+    out["similar_cases"] = _build_similar_from_retrieve(results)
+    # 簡易 Trust 判定(本物の Content Safety Groundedness Detection は将来差し替え可能):
+    # 引用が薄い/原因が出典紐付けされていないほど未根拠の確率が高い
+    n_cites = len(out["citations"])
+    n_causes = len(out.get("root_causes") or [])
+    n_bound = sum(1 for rc in (out.get("root_causes") or [])
+                  if (rc.get("supporting_doc_ids") or []))
+    # bound_rate: 原因のうち何割が出典紐付けされたか
+    bound_rate = (n_bound / n_causes) if n_causes else 0.0
+    if n_cites == 0 or n_causes == 0 or bound_rate < 0.34:
+        trust_band, ungrounded = "red", 0.7
+    elif n_cites < 3 or bound_rate < 0.67:
+        trust_band, ungrounded = "yellow", 0.35
+    else:
+        trust_band, ungrounded = "green", 0.05
+    out["trust"] = {"band": trust_band, "ungrounded_percentage": ungrounded,
+                    "bound_rate": round(bound_rate, 2), "n_citations": n_cites}
+    # 緊急度の正規化(LLM が "緊急" "中" 等で返した場合の防御)
+    lvl = (out.get("urgency") or {}).get("level") or "Medium"
+    if lvl not in ("Critical", "High", "Medium", "Low"):
+        lvl = "Medium"
+    out.setdefault("urgency", {})["level"] = lvl
+    # 空欄の防御
+    out.setdefault("parallel_checks_while_waiting", [])
+    out.setdefault("recommended_tools", [])
     return out
 
 
-def notify_teams(message, intake, urgency):
-    text = (f"🚨 製造トリアージ通知 [{urgency}]\n"
-            f"設備: {intake['equipment_name']} / 症状: {intake['symptom']}\n{message}")
+def _build_similar_from_retrieve(results):
+    """LLM 生成をやめて retrieve の past_trouble 実データから類似事例を構築。
+    corpus 非整合(日付/復旧分の幻覚)を排除する。"""
+    out = []
+    for d in (results.get("past_trouble") or [])[:3]:
+        out.append({
+            "title": f"{d.get('equipment_id','-')} ・ {d.get('date','-')}",
+            "date": d.get("date", "-"),
+            "cause": d.get("cause", "-"),
+            "recovery_minutes": d.get("recovery_minutes", 0),
+            "note": (d.get("text") or "")[:160],
+        })
+    return out
+
+
+def build_maintenance_package(intake, triage):
+    """保全に渡す『情報パッケージ』を組み立てる。
+    電話で『異音がする』と言われるのと比べ、現場到着後の診断時間を短縮する目的。
+    本書(02-final-pitch-strategy.md Part 3)で定義する Teams 通知の中核。"""
+    urg = (triage.get("urgency") or {}).get("level", "High")
+    causes = (triage.get("root_causes") or [])[:3]
+    tools = (triage.get("recommended_tools") or [])[:5]
+    similar = (triage.get("similar_cases") or [])[:1]
+    parallel = (triage.get("parallel_checks_while_waiting") or [])[:3]
+    lines = [f"🚨 製造トリアージ通知 [{urg}]",
+             f"設備: {intake.get('equipment_name','-')}  /  症状: {intake.get('symptom','-')}"]
+    if intake.get("error_code"):
+        lines[-1] += f"  /  コード: {intake['error_code']}"
+    if causes:
+        lines.append("")
+        lines.append("■ 推定原因(確信度順)")
+        for c in causes:
+            try:
+                conf_pct = int(round(float(c.get("confidence", 0)) * 100))
+            except (TypeError, ValueError):
+                conf_pct = 0
+            lines.append(f"  {c.get('rank','-')}. {c.get('cause','-')}  ({conf_pct}%)")
+    if tools:
+        lines.append("")
+        lines.append("■ 持参推奨ツール")
+        for t in tools:
+            lines.append(f"  ・ {t}")
+    if similar:
+        s = similar[0]
+        lines.append("")
+        lines.append(f"■ 類似事例: {s.get('date','-')} ・ 原因={s.get('cause','-')} ・ {s.get('recovery_minutes',0)}分で復旧")
+    if parallel:
+        lines.append("")
+        lines.append("■ オペレーター並行作業(到着までに準備)")
+        for p in parallel:
+            lines.append(f"  ・ {p}")
+    return "\n".join(lines)
+
+
+def notify_teams(message, intake, urgency, triage=None):
+    """保全に通知を送る。triage が渡された場合は情報パッケージを組み立てて送る。
+    互換のため triage 未指定時は従来の短い形を送る。"""
+    if triage is not None:
+        text = build_maintenance_package(intake, triage)
+    else:
+        text = (f"🚨 製造トリアージ通知 [{urgency}]\n"
+                f"設備: {intake['equipment_name']} / 症状: {intake['symptom']}\n{message}")
     if not TEAMS_WEBHOOK_URL:
         return False, text
     import urllib.request
@@ -367,17 +474,16 @@ ACTION_TOOLS = [
 
 
 def _exec_tool(name, args, intake, urgency):
-    """ツールの実体。Action AgentのツールコールをサーバÅで実行する。"""
+    """ツールの『提案』を返す(実行はしない)。
+    HITL一本化の方針により、実行はインシデント・ボードの承認後にのみ行う。
+    フォーム経路では『AIがどのツールを提案したか』を返すだけで Teams 等の外部副作用は起こさない。"""
     if name == "escalate_to_maintenance":
-        sent, _text = notify_teams(args.get("message", ""), intake, urgency)
-        # detail は UI 表示用に通知本文のみ(生の🚨ヘッダ/重複情報は webhook 側にのみ残す)
-        return {"tool": name, "args": args, "result": ("Teams送信" if sent else "通知をシミュレート"),
-                "detail": args.get("message", ""), "to": args.get("to", "保全当番"), "executed": True}
+        return {"tool": name, "args": args, "result": "提案(承認待ち)",
+                "detail": args.get("message", ""), "to": args.get("to", "保全当番"),
+                "executed": False}
     if name == "isolate_lot":
-        import datetime
-        ticket = f"ISO-{intake.get('equipment_id','LOT')}"
-        return {"tool": name, "args": args, "result": f"ロット隔離フラグ発行 {ticket}",
-                "detail": args.get("reason", ""), "executed": True}
+        return {"tool": name, "args": args, "result": "提案(承認待ち)",
+                "detail": args.get("reason", ""), "executed": False}
     return {"tool": name, "args": args, "result": "unknown tool", "executed": False}
 
 

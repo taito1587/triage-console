@@ -125,9 +125,16 @@ def _get(incident_id):
     return None
 
 
-# --- R1: 取り込み + 自動トリアージ(アクションは実行しない=承認待ち) -----------
+# --- R1: 取り込み + 自動トリアージ ------------------------------------------
+# 緊急度4段階の自律性:
+#   Critical: 火災/煙/人身/ライン全停止級 → 承認スキップ・即時通知(auto_escalated)
+#   High:     品質影響大/単一停止       → 承認待ち(awaiting_approval)
+#   Medium:   軽微/予兆                  → 承認待ち + 並行作業を提示(awaiting_approval)
+#   Low:      誤検知レベル                → 通知しない・自己解決ガイドのみ(self_help)
 TRIAGE_FIELDS = ["urgency", "root_causes", "first_checks", "recommended_actions",
-                 "escalation", "image_findings", "citations"]
+                 "escalation", "image_findings", "citations",
+                 "parallel_checks_while_waiting", "recommended_tools",
+                 "similar_cases", "trust"]
 
 
 def _event_id(ev):
@@ -187,7 +194,25 @@ def ingest(events):
     for ev, intake, tri in triaged:
         urg = tri.get("urgency", {}).get("level", "Medium")
         rc = (tri.get("root_causes") or [{}])[0]
-        needs_approval = urg == "High" and tri.get("escalation", {}).get("should_notify")
+        should_notify = bool(tri.get("escalation", {}).get("should_notify"))
+        # 4段化の状態振り分け
+        if urg == "Critical":
+            # 承認スキップ・即時通知。失敗してもインシデントは積む
+            status = "auto_escalated"
+            sent, text = core.notify_teams(None, intake, urg, triage=tri)
+            audit_action = "auto_escalated"
+            audit_detail = ("Critical: 承認スキップ・保全へ即時通知"
+                            + (" / Teams送信成功" if sent else " / (デモ)シミュレート"))
+        elif urg == "Low":
+            # 通知しない・自己解決ガイドのみ
+            status = "self_help"
+            audit_action = "self_help"
+            audit_detail = "Low: 自己解決ガイドのみ・保全通知なし"
+        else:  # High / Medium
+            status = "awaiting_approval" if should_notify else "triaged"
+            audit_action = "auto_triaged"
+            audit_detail = (f"緊急度{urg} / 第一候補 {rc.get('cause','-')}"
+                            + (" / 承認待ち" if status == "awaiting_approval" else ""))
         inc = {
             "id": _event_id(ev),
             "equipment_id": intake["equipment_id"],
@@ -200,10 +225,11 @@ def ingest(events):
             "urgency": urg,
             "top_cause": rc.get("cause", ""),
             "confidence": rc.get("confidence", 0),
-            "status": "awaiting_approval" if needs_approval else "triaged",
+            "trust_band": (tri.get("trust") or {}).get("band", "yellow"),
+            "status": status,
             "triage": {k: tri.get(k) for k in TRIAGE_FIELDS},
-            "audit": [{"action": "auto_triaged", "by": "AIエージェント", "ts": _now(),
-                       "detail": f"緊急度{urg} / 第一候補 {rc.get('cause','-')}"}],
+            "audit": [{"action": audit_action, "by": "AIエージェント", "ts": _now(),
+                       "detail": audit_detail}],
             "resolution": None,
         }
         _upsert(inc)
@@ -213,12 +239,33 @@ def ingest(events):
 
 def ingest_sample():
     with open(SAMPLE_EVENTS, encoding="utf-8") as f:
-        return ingest(json.load(f))
+        created = ingest(json.load(f))
+    # デモ用: 1件を解決済みに変えて ai_hit_rate が初期表示で空欄にならないようにする
+    # (取り込み直後だと resolved 0件→ ai_hit_rate=null になり KPI に「—」が出る)
+    # 対象は triaged(自動アクション不要と判定された軽め)または self_help(オペレーター自己解決可能)。
+    # awaiting_approval を勝手に解決するとデモで Approve & notify の見せ場が消えるので除外。
+    # self_help が複数あれば1件のみ resolved に変える(残り1件は self_help のまま「案内」のデモが見える)。
+    try:
+        for inc in created:
+            if inc.get("status") in ("triaged", "self_help"):
+                resolve(inc["id"],
+                        root_cause=inc.get("top_cause") or inc.get("symptom") or "原因確認済み",
+                        recovery_minutes=22,
+                        note="(デモ用初期解決) 過去事例と同様の対処で復旧",
+                        ai_was_correct="当たり",
+                        by="デモ初期化")
+                break
+    except Exception:  # noqa  失敗してもボード表示自体は維持
+        pass
+    return created
 
 
 # --- ボード取得 -------------------------------------------------------------
-_ORDER = {"awaiting_approval": 0, "triaged": 1, "escalated": 2, "resolved": 3}
-_URG = {"High": 0, "Medium": 1, "Low": 2}
+# 表示順: 人の対応が必要なもの(承認待ち)が最上位、Critical自動通知の次、
+# 対応中、解決済み、最後に Low の自己解決ガイド(参考扱い)
+_ORDER = {"awaiting_approval": 0, "auto_escalated": 1, "triaged": 2,
+          "escalated": 3, "resolved": 4, "self_help": 5}
+_URG = {"Critical": 0, "High": 1, "Medium": 2, "Low": 3}
 
 
 def board(status=None):
@@ -233,18 +280,21 @@ def board(status=None):
 
 # --- S3: 人間承認 → 保全へ実行(通知) ----------------------------------------
 def approve(incident_id, approver="現場責任者"):
+    """High/Medium のインシデントの承認 → 保全に情報パッケージ付き通知。
+    Critical は ingest() 時点で既に通知済みなので承認不要。Low は通知対象外。"""
     inc = _get(incident_id)
     if not inc:
         raise KeyError(incident_id)
     if inc.get("status") != "awaiting_approval":
         raise InvalidState(f"承認できる状態ではありません（現在: {inc.get('status')}）")
-    esc = (inc.get("triage") or {}).get("escalation", {}) or {}
-    sent, text = core.notify_teams(esc.get("message", ""),
-                                   {"equipment_name": inc["equipment_name"], "symptom": inc["symptom"]},
-                                   inc.get("urgency", "High"))
+    tri = inc.get("triage") or {}
+    intake = {"equipment_name": inc["equipment_name"], "symptom": inc["symptom"],
+              "equipment_id": inc.get("equipment_id"), "error_code": inc.get("error_code")}
+    sent, text = core.notify_teams(None, intake, inc.get("urgency", "High"), triage=tri)
     inc["status"] = "escalated"
     inc["audit"].append({"action": "approved_escalated", "by": approver, "ts": _now(),
-                         "detail": ("保全へTeams通知を送信" if sent else "(デモ)保全へ通知をシミュレート")})
+                         "detail": ("保全へTeams通知(情報パッケージ)を送信"
+                                    if sent else "(デモ)保全へ情報パッケージをシミュレート")})
     _upsert(inc)
     return inc
 
@@ -292,9 +342,11 @@ def kpi():
     return {
         "total": len(items),
         "awaiting_approval": by_status.get("awaiting_approval", 0),
+        "auto_escalated": by_status.get("auto_escalated", 0),
         "triaged": by_status.get("triaged", 0),
         "escalated": by_status.get("escalated", 0),
         "resolved": by_status.get("resolved", 0),
+        "self_help": by_status.get("self_help", 0),
         "avg_recovery": round(sum(recs) / len(recs), 1) if recs else 0,
         "ai_hit_rate": round(100 * hit / len(resolved)) if resolved else None,
     }

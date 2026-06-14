@@ -60,6 +60,10 @@ class NotifyReq(BaseModel):
     message: str
 
 
+class ImageExtractReq(BaseModel):
+    image_b64: str
+
+
 @app.get("/api/meta")
 def meta():
     corpus = core.load_corpus()
@@ -224,6 +228,64 @@ def knowledge():
                      "cause": t.get("root_cause", ""), "minutes": t.get("recovery_minutes", 0)}
                     for t in top],
     }
+
+
+@app.post("/api/extract_from_image")
+def extract_from_image(req: ImageExtractReq):
+    """写真(型式銘板/HMIエラーパネル/設備全景) から intake をプリフィルするための情報を抽出する。
+    デモのクライマックス: 現場の人がスマホで1枚撮るだけ → 入力欄が次々埋まる。
+    GPT-4o vision 1回呼び出し。コーパス上の設備IDに正規化して返す。"""
+    client = core.get_client()
+    if client is None:
+        raise HTTPException(503, "Azure OpenAI が未設定です")
+    if not req.image_b64:
+        raise HTTPException(400, "画像がありません")
+    corpus = core.load_corpus()
+    equip_list = corpus.get("equipment_specs", [])
+    # コーパス内の設備IDを提示してそこから選ばせる(全くの幻覚を防ぐ)
+    equip_hint = "\n".join(f"- {e['equipment_id']}: {e.get('equipment_name','')} ({e.get('process','')})"
+                          for e in equip_list)
+    symptom_hint = "/".join(core.SYMPTOM_CATEGORIES)
+    user_text = (
+        "添付画像を解析し、以下を JSON で返してください。\n"
+        "画像に型式銘板/設備プレート/HMIエラー画面/状態表示が映っていれば積極的に読み取ること。\n\n"
+        "{\n"
+        '  "equipment_id": "下のリストから最も合うID、判別不可なら空文字",\n'
+        '  "equipment_name": "対応する設備名(なければ空文字)",\n'
+        '  "error_code": "HMI/銘板から読み取れたエラーコード(なければ空文字)",\n'
+        '  "symptom": "次のいずれか: ' + symptom_hint + '",\n'
+        '  "hint_text": "画像から読み取れた特徴(摩耗痕、温度、表示メッセージ等)を1-2文",\n'
+        '  "confidence": "high|medium|low"\n'
+        "}\n\n"
+        "## 設備リスト(equipment_id はここから選ぶこと)\n" + equip_hint + "\n\n"
+        "出力は JSON オブジェクトのみ(前後に説明文を付けない)。"
+    )
+    try:
+        resp = client.chat.completions.create(
+            model=core.AOAI_DEPLOYMENT,
+            messages=[{"role": "system",
+                       "content": "あなたは製造現場の設備銘板・HMI読取の専門エージェント。画像から正確に情報を抽出する。"},
+                      {"role": "user", "content": [
+                          {"type": "text", "text": user_text},
+                          {"type": "image_url",
+                           "image_url": {"url": f"data:image/jpeg;base64,{req.image_b64}"}}
+                      ]}],
+            response_format={"type": "json_object"},
+            temperature=0.1, max_tokens=400,
+        )
+        import json as _json
+        out = _json.loads(resp.choices[0].message.content or "{}")
+    except Exception as e:  # noqa
+        raise HTTPException(500, f"画像解析失敗: {e}")
+    # 設備IDの正規化(LLM が捏造した ID は弾く)
+    valid_ids = {e["equipment_id"] for e in equip_list}
+    if out.get("equipment_id") not in valid_ids:
+        out["equipment_id"] = ""
+        out["equipment_name"] = ""
+    # 症状カテゴリ正規化
+    if out.get("symptom") not in core.SYMPTOM_CATEGORIES:
+        out["symptom"] = ""
+    return out
 
 
 @app.post("/api/notify")

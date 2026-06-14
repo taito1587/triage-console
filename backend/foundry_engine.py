@@ -159,16 +159,19 @@ def orchestrate_foundry(intake, image_b64=None, use_feedback=True):
         trace.append({"agent": "Triage", "title": "主エージェントが判断", "detail": "Foundry connected agents"})
     triage["specialist_findings"] = findings
 
-    # 4. アクション(バックエンド実行) — escalation 判定に従う
+    # 4. アクション(提案のみ) — HITL一本化により実行はインシデント・ボードの承認に集約
     actions = []
     esc = triage.get("escalation", {}) or {}
     if esc.get("should_notify"):
-        sent, text = core.notify_teams(esc.get("message", ""), intake, triage.get("urgency", {}).get("level", "High"))
         actions.append({"tool": "escalate_to_maintenance", "args": {"to": esc.get("to", "保全")},
-                        "result": ("Teams送信" if sent else "(デモ)通知シミュレート"), "detail": text, "executed": True})
+                        "result": "提案(承認待ち)",
+                        "detail": esc.get("message", ""),
+                        "to": esc.get("to", "保全"),
+                        "executed": False})
     trace.append({"agent": "Action",
-                  "title": "アクション実行" if actions else "アクション判断",
-                  "detail": " / ".join(f"{a['tool']}→{a['result']}" for a in actions) or "自動アクションは不要と判断"})
+                  "title": "アクション提案" if actions else "アクション判断",
+                  "detail": (" / ".join(f"{a['tool']}→{a['result']}" for a in actions)
+                             or "自動アクションは不要と判断")})
 
     triage["trace"] = trace
     triage["actions"] = actions

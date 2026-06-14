@@ -33,23 +33,29 @@ const theme = createTheme({
     '"Inter", "Hiragino Sans", "Noto Sans JP", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
   fontFamilyMonospace:
     'ui-monospace, "SFMono-Regular", "JetBrains Mono", Menlo, Consolas, monospace',
-  defaultRadius: 'md',
+  defaultRadius: 'sm',
   fontSizes: {
-    xs: '12px', sm: '13px', md: '14px', lg: '16px', xl: '19px',
+    xs: '11px', sm: '13px', md: '14px', lg: '15px', xl: '18px',
   },
   headings: {
-    fontWeight: '650',
+    fontWeight: '700',
     sizes: {
-      h4: { fontSize: '16px', lineHeight: '1.4' },
-      h5: { fontSize: '14px', lineHeight: '1.4' },
-      h6: { fontSize: '13px', lineHeight: '1.4' },
+      h3: { fontSize: '18px', lineHeight: '1.3' },
+      h4: { fontSize: '15px', lineHeight: '1.4' },
+      h5: { fontSize: '13px', lineHeight: '1.4' },
+      h6: { fontSize: '12px', lineHeight: '1.4' },
     },
   },
-  radius: { sm: '6px', md: '8px', lg: '12px' },
+  radius: { xs: '3px', sm: '4px', md: '6px', lg: '10px' },
   components: {
-    Card: { defaultProps: { shadow: 'none', withBorder: true, radius: 'md' } },
-    Paper: { defaultProps: { radius: 'md' } },
-    Button: { defaultProps: { fw: 600 } },
+    Card: { defaultProps: { shadow: 'none', withBorder: true, radius: 'sm' } },
+    Paper: { defaultProps: { radius: 'sm' } },
+    Button: { defaultProps: { fw: 600, radius: 'sm' } },
+    Badge: { defaultProps: { radius: 'xs' } },
+    TextInput: { defaultProps: { radius: 'sm' } },
+    Textarea: { defaultProps: { radius: 'sm' } },
+    Select: { defaultProps: { radius: 'sm' } },
+    NumberInput: { defaultProps: { radius: 'sm' } },
   },
 })
 
